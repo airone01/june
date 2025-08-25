@@ -13,8 +13,8 @@ echo "Directories:"
 echo -n "  ~/.junest: "
 [[ -d "$HOME/.junest" ]] && echo "EXISTS (should be removed!)" || echo "not found (good)"
 
-echo -n "  ~/goinfre/junest-root: "
-[[ -d "$HOME/goinfre/junest-root" ]] && echo "exists" || echo "NOT FOUND"
+echo -n "  /tmp/goinfre/junest-root: "
+[[ -d "/tmp/goinfre/junest-root" ]] && echo "exists" || echo "NOT FOUND"
 
 echo -n "  ~/sgoinfre: "
 [[ -d "$HOME/sgoinfre" ]] && echo "exists" || echo "NOT FOUND"
@@ -33,7 +33,7 @@ echo ""
 
 echo "Junest Status:"
 if command -v junest &>/dev/null; then
-    export JUNEST_HOME="$HOME/goinfre/junest-root"
+    export JUNEST_HOME="/tmp/goinfre/junest-root"
     if [[ -d "$JUNEST_HOME" ]]; then
         echo "  Trying to run junest with JUNEST_HOME=$JUNEST_HOME"
         junest -- echo "  junest is working!" 2>&1 | head -5
@@ -64,7 +64,7 @@ echo "Recommendations:"
 if [[ -d "$HOME/.junest" ]]; then
     echo "  ! Remove ~/.junest directory (run june-cleanup)"
 fi
-if [[ ! -d "$HOME/goinfre/junest-root" ]]; then
+if [[ ! -d "/tmp/goinfre/junest-root" ]]; then
     echo "  ! Run june-startup to initialize junest"
 fi
 if ! command -v junest &>/dev/null; then

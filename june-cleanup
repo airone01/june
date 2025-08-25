@@ -22,9 +22,9 @@ if [[ -d "$HOME/.junest" ]]; then
 fi
 
 # Remove goinfre junest
-if [[ -d "$HOME/goinfre/junest-root" ]]; then
-    echo "Removing ~/goinfre/junest-root..."
-    rm -rf "$HOME/goinfre/junest-root"
+if [[ -d "/tmp/goinfre/junest-root" ]]; then
+    echo "Removing /tmp/goinfre/junest-root..."
+    rm -rf "/tmp/goinfre/junest-root"
 fi
 
 # Remove sgoinfre archive
@@ -34,10 +34,10 @@ if [[ -f "$HOME/sgoinfre/junest-root.tar.zst" ]]; then
 fi
 
 # Remove state files
-rm -f "$HOME/goinfre/june-state.db"
+rm -f "/tmp/goinfre/june-state.db"
 rm -f "$HOME/sgoinfre/june-state.db"
 rm -f "$HOME/sgoinfre/.junest.lock"
-rm -f "$HOME/goinfre/june-startup.log"
+rm -f "/tmp/goinfre/june-startup.log"
 
 # Remove shims
 if [[ -d "$HOME/bin" ]]; then

@@ -24,7 +24,7 @@ IFS=$'\n\t'
 
 # --- Configuration ---
 SGOINFRE="${HOME}/sgoinfre"
-GOINFRE="${HOME}/goinfre"
+GOINFRE="/tmp/goinfre"
 JUNEST_ROOT="${GOINFRE}/junest-root"
 JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
 JUNEST_LOCK="${SGOINFRE}/.junest.lock"
@@ -32,7 +32,8 @@ SHIMS_DIR="${HOME}/bin"
 STATE_DB="${GOINFRE}/june-state.db"
 JUNEST_CMD="$(command -v junest 2>/dev/null || true)"
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T0 -19)
+# COMPRESS_CMD=(zstd -T0 -19)
+COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
 
 # Set JUNEST_HOME environment variable
 export JUNEST_HOME="$JUNEST_ROOT"
