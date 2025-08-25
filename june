@@ -94,7 +94,6 @@ generate_shims_for_env() {
 
 # list available fat envs from /sgoinfre/*/june/envs that are exposed (june.proof present)
 list_available_envs() {
-  log "Scanning ${SGOINFRE_BASE}/*/june/envs for exposed envs (requires june.proof in the user's june dir)..."
   shopt -s nullglob
   for userdir in ${SGOINFRE_BASE}/*; do
     local user; user=$(basename "$userdir")
@@ -215,6 +214,7 @@ cmd_install() {
 }
 
 cmd_list_envs() {
+  log "Scanning ${SGOINFRE_BASE}/*/june/envs for exposed envs (requires june.proof in the user's june dir)..."
   list_available_envs | awk -F"\t" '{printf "user: %s\t env: %s\t tarball: %s\n", $1, $2, $3}'
 }
 

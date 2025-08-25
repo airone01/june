@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# june-build - build tarballs for june fat environments
+# Usage: june-build <envname> [options]
+# Creates a properly structured tarball that can be installed via 'june installft'
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# --- Configuration ---
+BUILD_DIR="${TMPDIR:-/tmp}/june-build-$$"
+OUTPUT_DIR="${PWD}"
+COMPRESS="zst"  # zst, gz, xz, or none
+VERBOSE=0
+
+# --- Helpers ---
+log() { printf '%s\n' "[june-build] $*"; }
+err() { printf '%s\n' "[june-build] ERROR: $*" >&2; }
+verbose() { 
+  if [[ $VERBOSE -eq 1 ]]; then
+    log "$*"
+  fi
+}
+
+usage() {
+  cat <<EOF
+Usage: june-build <envname> [options]
+
+Build a tarball for june fat environments with proper structure.
+
+Options:
+  -o, --output DIR     Output directory (default: current directory)
+  -c, --compress TYPE  Compression: zst, gz, xz, none (default: zst)
+  -v, --verbose        Verbose output
+  -h, --help          Show this help
+
+After creating the environment structure, you can:
+  1. Copy files into the build directory: ${BUILD_DIR}/opt/envs/<envname>/
+  2. The script will create the final tarball when you exit the subshell
+  3. Place executables in bin/ subdirectory for automatic shim generation
+
+Example:
+  june-build myenv
+  # This opens a subshell where you can populate the environment
+  # When you exit, the tarball will be created automatically
+EOF
+}
+
+cleanup() {
+  if [[ -d "$BUILD_DIR" ]]; then
+    verbose "cleaning up build directory: $BUILD_DIR"
+    rm -rf "$BUILD_DIR"
+  fi
+}
+
+create_tarball() {
+  local envname="$1"
+  local tarname
+  
+  case "$COMPRESS" in
+    zst)
+      tarname="${OUTPUT_DIR}/env-${envname}.tar.zst"
+      log "creating compressed tarball: $tarname"
+      tar --use-compress-program=zstd -cpf "$tarname" -C "$BUILD_DIR" .
+      ;;
+    gz)
+      tarname="${OUTPUT_DIR}/env-${envname}.tar.gz"
+      log "creating compressed tarball: $tarname"
+      tar -czpf "$tarname" -C "$BUILD_DIR" .
+      ;;
+    xz)
+      tarname="${OUTPUT_DIR}/env-${envname}.tar.xz"
+      log "creating compressed tarball: $tarname"
+      tar -cJpf "$tarname" -C "$BUILD_DIR" .
+      ;;
+    none)
+      tarname="${OUTPUT_DIR}/env-${envname}.tar"
+      log "creating uncompressed tarball: $tarname"
+      tar -cpf "$tarname" -C "$BUILD_DIR" .
+      ;;
+    *)
+      err "unsupported compression type: $COMPRESS"
+      return 1
+      ;;
+  esac
+  
+  log "tarball created: $tarname"
+  log "to install: june installft $tarname"
+  echo "$tarname"
+}
+
+interactive_build() {
+  local envname="$1"
+  local envdir="$BUILD_DIR/opt/envs/$envname"
+  
+  log "=== Interactive Build Mode ==="
+  log "Environment directory: $envdir"
+  log "Populate your environment in the directory above."
+  log "Recommended structure:"
+  log "  $envdir/bin/          - executables (will become shims)"
+  log "  $envdir/lib/          - libraries"
+  log "  $envdir/share/        - shared data"
+  log "  $envdir/usr/bin/      - additional executables"
+  log ""
+  log "Examples of what you can do:"
+  log "  cp /usr/bin/myapp $envdir/bin/"
+  log "  wget -O $envdir/bin/tool https://example.com/tool && chmod +x $envdir/bin/tool"
+  log "  make install PREFIX=$envdir"
+  log ""
+  log "Type 'exit' when done to create the tarball."
+  
+  # Create basic directory structure
+  mkdir -p "$envdir"/{bin,lib,share,usr/bin}
+  
+  # Start bash in the env directory
+  cd "$envdir"
+  export JUNE_BUILD_DIR="$envdir"
+  export JUNE_ENV_NAME="$envname"
+  export PS1="[june-build:$envname] \$ "
+  /usr/bin/env bash
+}
+
+batch_build() {
+  local envname="$1"
+  shift
+  local envdir="$BUILD_DIR/opt/envs/$envname"
+  
+  mkdir -p "$envdir"/{bin,lib,share,usr/bin}
+  
+  log "=== Batch Build Mode ==="
+  log "Environment directory: $envdir"
+  
+  # Execute remaining arguments as commands
+  for cmd in "$@"; do
+    log "executing: $cmd"
+    eval "cd '$envdir' && $cmd"
+  done
+}
+
+# Parse arguments
+ENVNAME=""
+BUILD_COMMANDS=()
+
+while (( $# > 0 )); do
+  case "$1" in
+    -h|--help)
+      usage; exit 0 ;;
+    -o|--output)
+      [[ $# -gt 1 ]] || { err "--output requires a directory"; exit 1; }
+      OUTPUT_DIR="$2"; shift ;;
+    -c|--compress)
+      [[ $# -gt 1 ]] || { err "--compress requires a type"; exit 1; }
+      COMPRESS="$2"; shift ;;
+    -v|--verbose)
+      VERBOSE=1 ;;
+    -*)
+      err "unknown option: $1"; exit 1 ;;
+    *)
+      if [[ -z "$ENVNAME" ]]; then
+        ENVNAME="$1"
+      else
+        BUILD_COMMANDS+=("$1")
+      fi
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$ENVNAME" ]]; then
+  err "environment name required"
+  usage; exit 1
+fi
+
+# Validate environment name
+if [[ ! "$ENVNAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+  err "environment name must contain only letters, numbers, dots, underscores, and hyphens"
+  exit 1
+fi
+
+# Check compression dependencies
+case "$COMPRESS" in
+  zst)
+    if ! command -v zstd >/dev/null 2>&1; then
+      err "zstd not found. Install zstd or use different compression."
+      exit 1
+    fi ;;
+  gz) ;; # built into tar
+  xz)
+    if ! command -v xz >/dev/null 2>&1; then
+      err "xz not found. Install xz-utils or use different compression."
+      exit 1
+    fi ;;
+esac
+
+# Set up cleanup trap
+trap cleanup EXIT
+
+# Create build directory
+mkdir -p "$BUILD_DIR/opt/envs/$ENVNAME"
+mkdir -p "$OUTPUT_DIR"
+
+verbose "build directory: $BUILD_DIR"
+verbose "output directory: $OUTPUT_DIR"
+verbose "compression: $COMPRESS"
+
+# Build mode
+if (( ${#BUILD_COMMANDS[@]} > 0 )); then
+  batch_build "$ENVNAME" "${BUILD_COMMANDS[@]}"
+else
+  interactive_build "$ENVNAME"
+fi
+
+# Create the final tarball
+create_tarball "$ENVNAME"
