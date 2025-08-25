@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# june-startup - Session startup script for june package manager
+# This script should be called at login to sync junest environment from sgoinfre to goinfre
+# Add to ~/.bashrc, ~/.zshrc, or your session startup: source ~/bin/june-startup
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# --- Configuration ---
+SGOINFRE="${HOME}/sgoinfre"
+GOINFRE="${HOME}/goinfre"
+JUNEST_ROOT="${GOINFRE}/junest-root"
+JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
+JUNEST_LOCK="${SGOINFRE}/.junest.lock"
+JUNE_STATE="${SGOINFRE}/june-state.db"
+JUNE_STATE_LOCAL="${GOINFRE}/june-state.db"
+SHIMS_DIR="${HOME}/bin"
+LOG_FILE="${GOINFRE}/june-startup.log"
+
+# Compression settings (zstd for better speed/ratio balance)
+COMPRESS_CMD="zstd -T0 -19"  # -T0 uses all cores, -19 for high compression
+DECOMPRESS_CMD="zstd -d"
+
+# --- Helpers ---
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$msg" | tee -a "$LOG_FILE"
+}
+
+err() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
+    echo "$msg" >&2 | tee -a "$LOG_FILE"
+}
+
+cleanup_lock() {
+    rm -f "$JUNEST_LOCK"
+}
+
+acquire_lock() {
+    local max_wait=60
+    local waited=0
+    
+    while [[ -f "$JUNEST_LOCK" ]] && (( waited < max_wait )); do
+        log "Waiting for another june operation to complete..."
+        sleep 2
+        ((waited += 2))
+    done
+    
+    if [[ -f "$JUNEST_LOCK" ]]; then
+        log "Lock timeout - removing stale lock"
+        rm -f "$JUNEST_LOCK"
+    fi
+    
+    echo "$$" > "$JUNEST_LOCK"
+    trap cleanup_lock EXIT
+}
+
+ensure_dirs() {
+    mkdir -p "$SGOINFRE" "$GOINFRE" "$SHIMS_DIR"
+    
+    # Check if sgoinfre is accessible
+    if ! touch "${SGOINFRE}/.test" 2>/dev/null; then
+        err "sgoinfre not accessible at ${SGOINFRE}"
+        return 1
+    fi
+    rm -f "${SGOINFRE}/.test"
+}
+
+sync_from_sgoinfre() {
+    if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
+        log "No junest archive found in sgoinfre - will create fresh environment"
+        return 1
+    fi
+    
+    log "Found junest archive in sgoinfre ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
+    
+    # Check if local junest already exists and is up-to-date
+    if [[ -d "$JUNEST_ROOT" ]]; then
+        local archive_time=$(stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null)
+        local local_marker="${JUNEST_ROOT}/.june-sync-time"
+        
+        if [[ -f "$local_marker" ]]; then
+            local local_time=$(cat "$local_marker")
+            if [[ "$archive_time" == "$local_time" ]]; then
+                log "Local junest environment is up-to-date, skipping sync"
+                return 0
+            fi
+        fi
+        
+        log "Local junest environment outdated, updating..."
+        rm -rf "$JUNEST_ROOT"
+    fi
+    
+    log "Decompressing junest archive to goinfre..."
+    mkdir -p "$JUNEST_ROOT"
+    
+    if ! $DECOMPRESS_CMD < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+        err "Failed to decompress junest archive"
+        rm -rf "$JUNEST_ROOT"
+        return 1
+    fi
+    
+    # Mark sync time
+    stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null > "${JUNEST_ROOT}/.june-sync-time"
+    
+    # Copy state file if exists
+    if [[ -f "$JUNE_STATE" ]]; then
+        cp "$JUNE_STATE" "$JUNE_STATE_LOCAL"
+    fi
+    
+    log "Junest environment synced successfully"
+    return 0
+}
+
+init_junest() {
+    log "Initializing new junest environment..."
+    
+    # Check if junest is available
+    if ! command -v junest &>/dev/null; then
+        err "junest not found in PATH - please install junest first"
+        err "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+        return 1
+    fi
+    
+    # Initialize junest
+    export JUNEST_ROOT="$JUNEST_ROOT"
+    if ! junest setup; then
+        err "Failed to initialize junest"
+        return 1
+    fi
+    
+    log "Junest initialized - saving to sgoinfre for persistence..."
+    sync_to_sgoinfre
+}
+
+sync_to_sgoinfre() {
+    if [[ ! -d "$JUNEST_ROOT" ]]; then
+        err "No local junest environment to sync"
+        return 1
+    fi
+    
+    log "Compressing junest environment for sgoinfre storage..."
+    local temp_archive="${JUNEST_ARCHIVE}.tmp"
+    
+    # Create compressed archive
+    if ! tar -cf - -C "$GOINFRE" junest-root | $COMPRESS_CMD > "$temp_archive"; then
+        err "Failed to compress junest environment"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    # Atomic move
+    mv "$temp_archive" "$JUNEST_ARCHIVE"
+    
+    # Copy state file if exists
+    if [[ -f "$JUNE_STATE_LOCAL" ]]; then
+        cp "$JUNE_STATE_LOCAL" "$JUNE_STATE"
+    fi
+    
+    local size=$(du -h "$JUNEST_ARCHIVE" | cut -f1)
+    log "Junest environment saved to sgoinfre (compressed: $size)"
+}
+
+verify_shims() {
+    if [[ ! -d "$SHIMS_DIR" ]]; then
+        return
+    fi
+    
+    local shim_count=0
+    for shim in "$SHIMS_DIR"/*; do
+        if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+            # Update JUNEST_ROOT_DIR in shim if needed
+            sed -i "s|^export JUNEST_ROOT_DIR=.*|export JUNEST_ROOT_DIR=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null || \
+            sed -i '' "s|^export JUNEST_ROOT_DIR=.*|export JUNEST_ROOT_DIR=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
+            ((shim_count++))
+        fi
+    done
+    
+    if (( shim_count > 0 )); then
+        log "Verified $shim_count june shims"
+    fi
+}
+
+# --- Main ---
+main() {
+    log "Starting june environment sync..."
+    
+    # Ensure directories exist
+    if ! ensure_dirs; then
+        err "Failed to ensure required directories"
+        return 1
+    fi
+    
+    # Acquire lock for sync operation
+    acquire_lock
+    
+    # Try to sync from sgoinfre
+    if ! sync_from_sgoinfre; then
+        # If no archive or sync failed, initialize new environment
+        if [[ ! -d "$JUNEST_ROOT" ]]; then
+            init_junest
+        fi
+    fi
+    
+    # Verify and update shims
+    verify_shims
+    
+    # Ensure PATH includes shims directory
+    if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+        export PATH="$SHIMS_DIR:$PATH"
+        log "Added $SHIMS_DIR to PATH"
+    fi
+    
+    # Set JUNEST_ROOT for june commands
+    export JUNEST_ROOT="$JUNEST_ROOT"
+    
+    cleanup_lock
+    log "June environment ready!"
+}
+
+# Hook for june install to trigger sync after modifications
+june_post_install() {
+    log "Syncing changes to sgoinfre after install..."
+    acquire_lock
+    sync_to_sgoinfre
+    cleanup_lock
+}
+
+# Export functions for use by june
+export -f sync_to_sgoinfre
+export -f acquire_lock
+export -f cleanup_lock
+export -f log
+export -f err
+
+# Run main if not being sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+else
+    # Being sourced - just ensure environment is ready
+    if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
+        main
+    else
+        # Quick check if PATH needs updating
+        if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+            export PATH="$SHIMS_DIR:$PATH"
+        fi
+        export JUNEST_ROOT="$JUNEST_ROOT"
+    fi
+fi
