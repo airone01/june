@@ -18,8 +18,8 @@ SHIMS_DIR="${HOME}/bin"
 LOG_FILE="${GOINFRE}/june-startup.log"
 
 # Compression settings (zstd for better speed/ratio balance)
-COMPRESS_CMD="zstd -T0 -19"  # -T0 uses all cores, -19 for high compression
-DECOMPRESS_CMD="zstd -d"
+COMPRESS_CMD=(zstd -T0 -19)  # -T0 uses all cores, -19 for high compression
+DECOMPRESS_CMD=(zstd -d)
 
 # --- Helpers ---
 log() {
@@ -94,7 +94,7 @@ sync_from_sgoinfre() {
     log "Decompressing junest archive to goinfre..."
     mkdir -p "$JUNEST_ROOT"
     
-    if ! $DECOMPRESS_CMD < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+    if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
         err "Failed to decompress junest archive"
         rm -rf "$JUNEST_ROOT"
         return 1
@@ -122,12 +122,28 @@ init_junest() {
         return 1
     fi
     
-    # Initialize junest
-    export JUNEST_ROOT="$JUNEST_ROOT"
+    # Set JUNEST_HOME to use our custom location
+    export JUNEST_HOME="$JUNEST_ROOT"
+    
+    # Remove any existing incomplete setup
+    if [[ -d "$JUNEST_ROOT" ]]; then
+        log "Cleaning incomplete junest setup..."
+        rm -rf "$JUNEST_ROOT"
+    fi
+    
+    # Initialize junest in the correct location
     if ! junest setup; then
         err "Failed to initialize junest"
         return 1
     fi
+    
+    # Update Junest env to avoid errors later
+    log "Updating junest env"
+    junest -- bash -c "
+        yay -Syy --noconfirm &&
+        yay -Syu --noconfirm &&
+        yay -S --noconfirm --needed base-devel git
+    " || log "Note: junest env installation failed"
     
     log "Junest initialized - saving to sgoinfre for persistence..."
     sync_to_sgoinfre
@@ -143,7 +159,7 @@ sync_to_sgoinfre() {
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
     
     # Create compressed archive
-    if ! tar -cf - -C "$GOINFRE" junest-root | $COMPRESS_CMD > "$temp_archive"; then
+    if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
         err "Failed to compress junest environment"
         rm -f "$temp_archive"
         return 1
@@ -169,9 +185,9 @@ verify_shims() {
     local shim_count=0
     for shim in "$SHIMS_DIR"/*; do
         if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
-            # Update JUNEST_ROOT_DIR in shim if needed
-            sed -i "s|^export JUNEST_ROOT_DIR=.*|export JUNEST_ROOT_DIR=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null || \
-            sed -i '' "s|^export JUNEST_ROOT_DIR=.*|export JUNEST_ROOT_DIR=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
+            # Update JUNEST_HOME in shim if needed
+            sed -i "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null || \
+            sed -i '' "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
             ((shim_count++))
         fi
     done
@@ -185,10 +201,19 @@ verify_shims() {
 main() {
     log "Starting june environment sync..."
     
+    # Set JUNEST_HOME for all operations
+    export JUNEST_HOME="$JUNEST_ROOT"
+    
     # Ensure directories exist
     if ! ensure_dirs; then
         err "Failed to ensure required directories"
         return 1
+    fi
+    
+    # Check if ~/.junest exists (from previous default installation)
+    if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
+        log "Found junest in default location, moving to goinfre..."
+        mv "$HOME/.junest" "$JUNEST_ROOT"
     fi
     
     # Acquire lock for sync operation
@@ -211,8 +236,8 @@ main() {
         log "Added $SHIMS_DIR to PATH"
     fi
     
-    # Set JUNEST_ROOT for june commands
-    export JUNEST_ROOT="$JUNEST_ROOT"
+    # Set JUNEST_HOME for june commands
+    export JUNEST_HOME="$JUNEST_ROOT"
     
     cleanup_lock
     log "June environment ready!"
@@ -238,6 +263,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 else
     # Being sourced - just ensure environment is ready
+    export JUNEST_HOME="$JUNEST_ROOT"
     if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
         main
     else
@@ -245,6 +271,5 @@ else
         if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
             export PATH="$SHIMS_DIR:$PATH"
         fi
-        export JUNEST_ROOT="$JUNEST_ROOT"
     fi
 fi

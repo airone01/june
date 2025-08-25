@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# june-debug - Debug june environment setup
+
+echo "=== June Environment Debug Info ==="
+echo ""
+
+echo "Environment Variables:"
+echo "  JUNEST_HOME: ${JUNEST_HOME:-[not set]}"
+echo "  PATH contains ~/bin: $(echo "$PATH" | grep -q "$HOME/bin" && echo "yes" || echo "no")"
+echo ""
+
+echo "Directories:"
+echo -n "  ~/.junest: "
+[[ -d "$HOME/.junest" ]] && echo "EXISTS (should be removed!)" || echo "not found (good)"
+
+echo -n "  ~/goinfre/junest-root: "
+[[ -d "$HOME/goinfre/junest-root" ]] && echo "exists" || echo "NOT FOUND"
+
+echo -n "  ~/sgoinfre: "
+[[ -d "$HOME/sgoinfre" ]] && echo "exists" || echo "NOT FOUND"
+
+echo -n "  ~/bin: "
+[[ -d "$HOME/bin" ]] && echo "exists" || echo "NOT FOUND"
+echo ""
+
+echo "Files:"
+echo -n "  junest archive: "
+[[ -f "$HOME/sgoinfre/junest-root.tar.zst" ]] && echo "exists ($(du -h "$HOME/sgoinfre/junest-root.tar.zst" | cut -f1))" || echo "not found"
+
+echo -n "  junest command: "
+command -v junest &>/dev/null && echo "found at $(command -v junest)" || echo "NOT FOUND"
+echo ""
+
+echo "Junest Status:"
+if command -v junest &>/dev/null; then
+    export JUNEST_HOME="$HOME/goinfre/junest-root"
+    if [[ -d "$JUNEST_HOME" ]]; then
+        echo "  Trying to run junest with JUNEST_HOME=$JUNEST_HOME"
+        junest -- echo "  junest is working!" 2>&1 | head -5
+    else
+        echo "  JUNEST_HOME directory does not exist"
+    fi
+else
+    echo "  Cannot test - junest not installed"
+fi
+echo ""
+
+echo "Shims:"
+if [[ -d "$HOME/bin" ]]; then
+    local count=0
+    for shim in "$HOME/bin"/*; do
+        if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+            echo "  - $(basename "$shim")"
+            ((count++))
+        fi
+    done
+    [[ $count -eq 0 ]] && echo "  No june shims found"
+else
+    echo "  ~/bin directory not found"
+fi
+echo ""
+
+echo "Recommendations:"
+if [[ -d "$HOME/.junest" ]]; then
+    echo "  ! Remove ~/.junest directory (run june-cleanup)"
+fi
+if [[ ! -d "$HOME/goinfre/junest-root" ]]; then
+    echo "  ! Run june-startup to initialize junest"
+fi
+if ! command -v junest &>/dev/null; then
+    echo "  ! Install junest:"
+    echo "    curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest"
+    echo "    chmod +x ~/.local/bin/junest"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
