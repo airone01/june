@@ -96,10 +96,35 @@ sync_from_sgoinfre() {
     log "Decompressing junest archive to goinfre..."
     mkdir -p "$JUNEST_ROOT"
     
-    if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
-        err "Failed to decompress junest archive"
-        rm -rf "$JUNEST_ROOT"
-        return 1
+    # Check if pv is installed
+    if ! command -v pv >/dev/null 2>&1; then
+        err "pv command not found. Install pv for progress bar and ETA (e.g., sudo apt install pv)"
+        # Fallback to original behavior without progress bar
+        if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+            err "Failed to decompress junest archive"
+            rm -rf "$JUNEST_ROOT"
+            return 1
+        fi
+    else
+        # Get the size of the compressed archive using du for reliability
+        local archive_size
+        archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
+        if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
+            err "Failed to get archive size, falling back to decompression without progress bar"
+            if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+                err "Failed to decompress junest archive"
+                rm -rf "$JUNEST_ROOT"
+                return 1
+            fi
+        else
+            log "Archive size: $archive_size bytes"
+            # Decompress archive with progress bar and ETA
+            if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$GOINFRE"; then
+                err "Failed to decompress junest archive"
+                rm -rf "$JUNEST_ROOT"
+                return 1
+            fi
+        fi
     fi
     
     # Mark sync time
@@ -160,11 +185,26 @@ sync_to_sgoinfre() {
     log "Compressing junest environment for sgoinfre storage..."
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
     
-    # Create compressed archive
-    if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
-        err "Failed to compress junest environment"
-        rm -f "$temp_archive"
-        return 1
+    # Check if pv is installed
+    if ! command -v pv >/dev/null 2>&1; then
+        err "pv command not found. Install pv for progress bar and ETA (e.g., sudo apt install pv)"
+        # Fallback to original behavior without progress bar
+        if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+            err "Failed to compress junest environment"
+            rm -f "$temp_archive"
+            return 1
+        fi
+    else
+        # Get the size of the directory to be compressed for pv
+        local dir_size
+        dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
+        
+        # Create compressed archive with progress bar and ETA
+        if ! tar -cf - -C "$GOINFRE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+            err "Failed to compress junest environment"
+            rm -f "$temp_archive"
+            return 1
+        fi
     fi
     
     # Atomic move

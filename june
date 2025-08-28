@@ -31,7 +31,7 @@ JUNEST_LOCK="${SGOINFRE}/.junest.lock"
 SHIMS_DIR="${HOME}/bin"
 STATE_DB="${GOINFRE}/june-state.db"
 JUNEST_CMD="$(command -v junest 2>/dev/null || true)"
-YAY_CMD="yay"
+YAY_CMD="yay --color=always"
 # COMPRESS_CMD=(zstd -T0 -19)
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
 
@@ -77,11 +77,26 @@ sync_to_sgoinfre() {
     log "Syncing junest environment to sgoinfre..."
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
     
-    # Create compressed archive
-    if ! tar -cf - -C "$GOINFRE" junest-root | ${COMPRESS_CMD[@]} > "$temp_archive"; then
-        err "Failed to compress junest environment"
-        rm -f "$temp_archive"
-        return 1
+    # Check if pv is installed
+    if ! command -v pv >/dev/null 2>&1; then
+        err "pv command not found. Install pv for progress bar and ETA (e.g., sudo apt install pv)"
+        # Fallback to original behavior without progress bar
+        if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+            err "Failed to compress junest environment"
+            rm -f "$temp_archive"
+            return 1
+        fi
+    else
+        # Get the size of the directory to be compressed for pv
+        local dir_size
+        dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
+        
+        # Create compressed archive with progress bar and ETA
+        if ! tar -cf - -C "$GOINFRE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+            err "Failed to compress junest environment"
+            rm -f "$temp_archive"
+            return 1
+        fi
     fi
     
     # Atomic move
@@ -271,8 +286,8 @@ Commands:
 Examples:
   june install neovim-bin      # Install neovim (binary version)
   june install code-bin        # Install VS Code
-  june search python          # Search for python packages
-  june list                   # Show all installed packages
+  june search python           # Search for python packages
+  june list                    # Show all installed packages
   
 Note: Prefer '-bin' package variants to avoid compilation.
       Changes are automatically synced to sgoinfre after operations.
@@ -296,6 +311,8 @@ case "$1" in
         cmd_update ;;
     sync)
         cmd_sync ;;
+    junest)
+        ${JUNEST_CMD} ;;
     *)
         err "unknown command: $1"
         exit 2 ;;
