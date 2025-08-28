@@ -5,6 +5,10 @@
 #  - june sync               : manually sync to sgoinfre
 #  - june list               : list installed packages
 #  - june remove <pkg>       : remove package
+#  - june startup            : sync junest environment from sgoinfre to goinfre at login
+#  - june clean-june         : clean up old junest installations and reset june
+#  - june doctor             : debug june environment setup
+#  - june junest             : log into june's junest env
 # Notes:
 #  - June exists to solve the lack of a proper package managers for a group of students.
 #  - The apps cannot be installed directly with sudo, the users of this app never has access to admin rights.
@@ -30,9 +34,12 @@ JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
 JUNEST_LOCK="${SGOINFRE}/.junest.lock"
 SHIMS_DIR="${HOME}/bin"
 STATE_DB="${GOINFRE}/june-state.db"
+JUNE_STATE="${SGOINFRE}/june-state.db"
+LOG_FILE="${GOINFRE}/june-startup.log"
 JUNEST_CMD="$(command -v junest 2>/dev/null || true)"
 YAY_CMD="yay"
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
+DECOMPRESS_CMD=(zstd -d)
 
 # Check if stdout is a terminal for color output
 if [[ -t 1 ]]; then
@@ -49,6 +56,7 @@ else
     GREEN=''
     YELLOW=''
     BLUE=''
+    GRAY=''
     NC=''
 fi
 
@@ -56,11 +64,28 @@ fi
 export JUNEST_HOME="$JUNEST_ROOT"
 
 # Create dirs if needed
-mkdir -p "$SHIMS_DIR" "$JUNEST_ROOT"
+mkdir -p "$SHIMS_DIR" "$JUNEST_ROOT" "$SGOINFRE" "$GOINFRE"
 
 # --- Helpers ---
-log() { printf "${BLUE}[june]${NC} %s\n" "$*"; }
-err() { printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2; }
+log() { 
+    if [[ "$1" == "--startup" ]]; then
+        shift
+        local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+        echo "$msg" | tee -a "$LOG_FILE"
+    else
+        printf "${BLUE}[june]${NC} %s\n" "$*"
+    fi
+}
+
+err() { 
+    if [[ "$1" == "--startup" ]]; then
+        shift
+        local msg="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
+        echo "$msg" >&2 | tee -a "$LOG_FILE"
+    else
+        printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2
+    fi
+}
 
 cleanup_lock() {
     rm -f "$JUNEST_LOCK"
@@ -81,7 +106,7 @@ acquire_lock() {
         rm -f "$JUNEST_LOCK"
     fi
     
-    echo "$$" > "$JUNEST_LOCK"
+    log "$$" > "$JUNEST_LOCK"
     trap cleanup_lock EXIT
 }
 
@@ -95,7 +120,6 @@ sync_to_sgoinfre() {
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
     
     if ! command -v pv >/dev/null 2>&1; then
-        err "pv command not found. Install pv for progress bar and ETA (e.g., sudo apt install pv)"
         if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
@@ -129,7 +153,7 @@ ensure_junest() {
     fi
     
     if [[ ! -d "$JUNEST_ROOT" ]]; then
-        err "Junest environment not initialized. Run june-startup first."
+        err "Junest environment not initialized. Run 'june startup' first."
         return 1
     fi
     
@@ -155,6 +179,142 @@ record_package() {
     local pkg="$1"
     local timestamp=$(date +%s)
     echo "${pkg}|${timestamp}|installed" >> "$STATE_DB"
+}
+
+# --- Startup Functions ---
+ensure_dirs() {
+    mkdir -p "$SGOINFRE" "$GOINFRE" "$SHIMS_DIR"
+    
+    # Check if sgoinfre is accessible
+    if ! touch "${SGOINFRE}/.test" 2>/dev/null; then
+        err --startup "sgoinfre not accessible at ${SGOINFRE}"
+        return 1
+    fi
+    rm -f "${SGOINFRE}/.test"
+}
+
+sync_from_sgoinfre() {
+    if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
+        log --startup "No junest archive found in sgoinfre - will create fresh environment"
+        return 1
+    fi
+    
+    log --startup "Found junest archive in sgoinfre ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
+    
+    # Check if local junest already exists and is up-to-date
+    if [[ -d "$JUNEST_ROOT" ]]; then
+        local archive_time=$(stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null)
+        local local_marker="${JUNEST_ROOT}/.june-sync-time"
+        
+        if [[ -f "$local_marker" ]]; then
+            local local_time=$(cat "$local_marker")
+            if [[ "$archive_time" == "$local_time" ]]; then
+                log --startup "Local junest environment is up-to-date, skipping sync"
+                return 0
+            fi
+        fi
+        
+        log --startup "Local junest environment outdated, updating..."
+        rm -rf "$JUNEST_ROOT"
+    fi
+    
+    log --startup "Decompressing junest archive to goinfre..."
+    mkdir -p "$JUNEST_ROOT"
+    
+    # Check if pv is installed
+    if ! command -v pv >/dev/null 2>&1; then
+        if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+            err --startup "Failed to decompress junest archive"
+            rm -rf "$JUNEST_ROOT"
+            return 1
+        fi
+    else
+        local archive_size
+        archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
+        if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
+            err --startup "Failed to get archive size, falling back to decompression without progress bar"
+            if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+                err --startup "Failed to decompress junest archive"
+                rm -rf "$JUNEST_ROOT"
+                return 1
+            fi
+        else
+            log --startup "Archive size: $archive_size bytes"
+            if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$GOINFRE"; then
+                err --startup "Failed to decompress junest archive"
+                rm -rf "$JUNEST_ROOT"
+                return 1
+            fi
+        fi
+    fi
+    
+    # Mark sync time
+    stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null > "${JUNEST_ROOT}/.june-sync-time"
+    
+    # Copy state file if exists
+    if [[ -f "$JUNE_STATE" ]]; then
+        cp "$JUNE_STATE" "$STATE_DB"
+    fi
+    
+    log --startup "Junest environment synced successfully"
+    return 0
+}
+
+init_junest() {
+    log --startup "Initializing new junest environment..."
+    
+    # Check if junest is available
+    if ! command -v junest &>/dev/null; then
+        err --startup "junest not found in PATH - please install junest first"
+        err --startup "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+        return 1
+    fi
+    
+    # Set JUNEST_HOME to use our custom location
+    export JUNEST_HOME="$JUNEST_ROOT"
+    
+    # Remove any existing incomplete setup
+    if [[ -d "$JUNEST_ROOT" ]]; then
+        log --startup "Cleaning incomplete junest setup..."
+        rm -rf "$JUNEST_ROOT"
+    fi
+    
+    # Initialize junest in the correct location
+    if ! junest setup; then
+        err --startup "Failed to initialize junest"
+        return 1
+    fi
+    
+    # Update Junest env to avoid errors later
+    log --startup "Updating junest env"
+    junest -- bash -c "
+        yay -Syy --noconfirm &&
+        yay -Syu --noconfirm &&
+        yay -S --noconfirm --needed base-devel git
+    " || log --startup "Note: junest env installation failed"
+    
+    log --startup "Junest initialized - saving to sgoinfre for persistence..."
+    sync_to_sgoinfre
+}
+
+verify_shims() {
+    if [[ ! -d "$SHIMS_DIR" ]]; then
+        return
+    fi
+    
+    local shim_count=0
+    for shim in "$SHIMS_DIR"/*; do
+        if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+            # Update JUNEST_HOME in shim if needed
+            sed -i "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null || \
+            sed -i '' "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
+            ((shim_count++))
+        fi
+    done
+    
+    if (( shim_count > 0 )); then
+        log --startup "Verified $shim_count june shims"
+    fi
 }
 
 # --- Commands ---
@@ -274,21 +434,206 @@ cmd_update() {
     log "${GREEN}System updated and synced!${NC}"
 }
 
+cmd_startup() {
+    log --startup "Starting june environment sync..."
+    
+    # Set JUNEST_HOME for all operations
+    export JUNEST_HOME="$JUNEST_ROOT"
+    
+    # Ensure directories exist
+    if ! ensure_dirs; then
+        err --startup "Failed to ensure required directories"
+        return 1
+    fi
+    
+    # Check if ~/.junest exists (from previous default installation)
+    if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
+        log --startup "Found junest in default location, moving to goinfre..."
+        mv "$HOME/.junest" "$JUNEST_ROOT"
+    fi
+    
+    # Acquire lock for sync operation
+    acquire_lock
+    
+    if ! sync_from_sgoinfre; then
+        # If no archive or sync failed, initialize new environment
+        if [[ ! -d "$JUNEST_ROOT" ]]; then
+            init_junest
+        fi
+    fi
+    
+    verify_shims
+    
+    # Ensure PATH includes shims directory
+    if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+        export PATH="$SHIMS_DIR:$PATH"
+        log --startup "Added $SHIMS_DIR to PATH"
+    fi
+    
+    # Set JUNEST_HOME for june commands
+    export JUNEST_HOME="$JUNEST_ROOT"
+    
+    cleanup_lock
+    log --startup "June environment ready!"
+}
+
+cmd_clean_june() {
+    log "${YELLOW}This will clean up all junest installations and june data, junest installation, and packages."
+    log "${YELLOW}You will need to reinstall all packages after this.${NC}"
+    read -p "Continue? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log "Cancelled."
+        return 0
+    fi
+
+    log "Cleaning up junest installations..."
+
+    # Remove default junest location
+    if [[ -d "$HOME/.junest" ]]; then
+        log "Removing ~/.junest..."
+        rm -rf "$HOME/.junest"
+    fi
+
+    # Remove goinfre junest
+    if [[ -d "$JUNEST_ROOT" ]]; then
+        log "Removing $JUNEST_ROOT..."
+        rm -rf "$JUNEST_ROOT"
+    fi
+
+    # Remove sgoinfre archive
+    if [[ -f "$JUNEST_ARCHIVE" ]]; then
+        log "Removing sgoinfre archive..."
+        rm -f "$JUNEST_ARCHIVE"
+    fi
+
+    # Remove state files
+    rm -f "$STATE_DB"
+    rm -f "$JUNE_STATE"
+    rm -f "$JUNEST_LOCK"
+    rm -f "$LOG_FILE"
+
+    # Remove shims
+    if [[ -d "$SHIMS_DIR" ]]; then
+        log "Removing june shims..."
+        for shim in "$SHIMS_DIR"/*; do
+            if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+                rm -f "$shim"
+                log "  Removed: $(basename "$shim")"
+            fi
+        done
+    fi
+
+    log "Cleanup complete!"
+    log ""
+    log "You can now run 'june startup' to initialize a fresh environment."
+}
+
+cmd_doctor() {
+    log "Environment Variables:"
+    log "  JUNEST_HOME: ${JUNEST_HOME:-[not set]}"
+    log "  PATH contains ~/bin: $(echo "$PATH" | grep -q "$HOME/bin" && echo "yes" || echo "no")"
+
+    log "Directories:"
+    log "  ~/.junest: "
+    [[ -d "$HOME/.junest" ]] && err "EXISTS (should be removed!)" || log "not found (good)"
+
+    log "  $JUNEST_ROOT: "
+    [[ -d "$JUNEST_ROOT" ]] && log "exists" || err "NOT FOUND"
+
+    log "  ~/sgoinfre: "
+    [[ -d "$HOME/sgoinfre" ]] && log "exists" || err "NOT FOUND"
+
+    log "  ~/bin: "
+    [[ -d "$HOME/bin" ]] && log "exists" || err "NOT FOUND"
+
+    log "Files:"
+    log "  junest archive: "
+    [[ -f "$JUNEST_ARCHIVE" ]] && log "exists ($(du -h "$JUNEST_ARCHIVE" | cut -f1))" || err "not found"
+
+    log "  junest command: "
+    command -v junest &>/dev/null && log "found at $(command -v junest)" || err "NOT FOUND"
+
+    log "Junest Status:"
+    if command -v junest &>/dev/null; then
+        export JUNEST_HOME="$JUNEST_ROOT"
+        if [[ -d "$JUNEST_HOME" ]]; then
+            log "  Trying to run junest with JUNEST_HOME=$JUNEST_HOME"
+            junest -- echo "[june]   junest is working!" 2>&1 | head -5
+        else
+            err "  JUNEST_HOME directory does not exist"
+        fi
+    else
+        err "  Cannot test - junest not installed"
+    fi
+
+    log "Shims:"
+    if [[ -d "$SHIMS_DIR" ]]; then
+        local count=0
+        for shim in "$SHIMS_DIR"/*; do
+            if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+                log "  - $(basename "$shim")"
+                ((count++))
+            fi
+        done
+        [[ $count -eq 0 ]] && log "  No june shims found"
+    else
+        log "  ~/bin directory not found"
+    fi
+
+    log "Recommendations:"
+    if [[ -d "$HOME/.junest" ]]; then
+        log "  ! Remove ~/.junest directory (run 'june clean-june')"
+    fi
+    if [[ ! -d "$JUNEST_ROOT" ]]; then
+        log "  ! Run 'june startup' to initialize junest"
+    fi
+    if ! command -v junest &>/dev/null; then
+        log "  ! Install junest:"
+        log "    curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest"
+        log "    chmod +x ~/.local/bin/junest"
+        log "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+}
+
+# --- Main dispatch ---
+# Check if being sourced (for startup functionality from shell rc files)
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    # Being sourced - run startup if needed
+    export JUNEST_HOME="$JUNEST_ROOT"
+    if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
+        cmd_startup
+    else
+        # Quick check if PATH needs updating
+        if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+            export PATH="$SHIMS_DIR:$PATH"
+        fi
+    fi
+    return 0
+fi
+
 # Command dispatch
 if (( $# < 1 )); then
     printf "${BLUE}Usage:${NC} june <command> [args]\n\n"
-    printf "${YELLOW}Commands:${NC}\n"
+    printf "${YELLOW}Commands (packages):${NC}\n"
     printf "  ${BLUE}install ${GREEN}<pkg>${NC}   Install package inside junest (auto-syncs to sgoinfre)\n"
     printf "  ${BLUE}remove ${GREEN}<pkg>${NC}    Remove package from junest\n"
     printf "  ${BLUE}list${NC}            List installed packages\n"
     printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
-    printf "  ${BLUE}update${NC}          Update all packages\n"
-    printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n\n"
+    printf "  ${BLUE}update${NC}          Update all packages\n\n"
+    printf "${YELLOW}Commands (image):${NC}\n"
+    printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n"
+    printf "  ${BLUE}startup${NC}         Sync junest environment from sgoinfre (automatically ran at login)\n"
+    printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n"
+    printf "  ${BLUE}junest${NC}          Boot into junest. ${YELLOW}Use if you know what you're doing only.\n"
+    printf "  ${BLUE}doctor${NC}          Debug june environment setup\n\n"
     printf "${YELLOW}Examples:${NC}\n"
     printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
     printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
     printf "  june ${BLUE}search ${GREEN}python${NC}           ${GRAY}# Search for python packages${NC}\n"
-    printf "  june ${BLUE}list${NC}                    ${GRAY}# Show all installed packages${NC}\n\n"
+    printf "  june ${BLUE}list${NC}                    ${GRAY}# Show all installed packages${NC}\n"
+    printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
+    printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
     printf "${YELLOW}Note:${NC} Prefer '-bin' and avoid '-git' package variants to avoid compilation.\n"
     printf "      Changes are automatically synced to sgoinfre after operations.\n"
     exit 0
@@ -310,6 +655,12 @@ case "$1" in
         cmd_update ;;
     sync)
         cmd_sync ;;
+    startup)
+        cmd_startup ;;
+    clean-june)
+        cmd_clean_june ;;
+    doctor)
+        cmd_doctor ;;
     junest)
         ${JUNEST_CMD} ;;
     *)
