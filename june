@@ -31,9 +31,26 @@ JUNEST_LOCK="${SGOINFRE}/.junest.lock"
 SHIMS_DIR="${HOME}/bin"
 STATE_DB="${GOINFRE}/june-state.db"
 JUNEST_CMD="$(command -v junest 2>/dev/null || true)"
-YAY_CMD="yay --color=always"
-# COMPRESS_CMD=(zstd -T0 -19)
+YAY_CMD="yay"
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
+
+# Check if stdout is a terminal for color output
+if [[ -t 1 ]]; then
+    USE_COLORS=1
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    GRAY='\033[38;5;248m'
+    NC='\033[0m' # No Color
+else
+    USE_COLORS=0
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
 
 # Set JUNEST_HOME environment variable
 export JUNEST_HOME="$JUNEST_ROOT"
@@ -42,8 +59,8 @@ export JUNEST_HOME="$JUNEST_ROOT"
 mkdir -p "$SHIMS_DIR" "$JUNEST_ROOT"
 
 # --- Helpers ---
-log() { printf '%s\n' "[june] $*"; }
-err() { printf '%s\n' "[june] ERROR: $*" >&2; }
+log() { printf "${BLUE}[june]${NC} %s\n" "$*"; }
+err() { printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2; }
 
 cleanup_lock() {
     rm -f "$JUNEST_LOCK"
@@ -74,24 +91,19 @@ sync_to_sgoinfre() {
         return 1
     fi
     
-    log "Syncing junest environment to sgoinfre..."
+    log "Syncing junest environment to ${YELLOW}sgoinfre${NC}..."
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
     
-    # Check if pv is installed
     if ! command -v pv >/dev/null 2>&1; then
         err "pv command not found. Install pv for progress bar and ETA (e.g., sudo apt install pv)"
-        # Fallback to original behavior without progress bar
         if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
             return 1
         fi
     else
-        # Get the size of the directory to be compressed for pv
         local dir_size
         dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
-        
-        # Create compressed archive with progress bar and ETA
         if ! tar -cf - -C "$GOINFRE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
@@ -99,16 +111,14 @@ sync_to_sgoinfre() {
         fi
     fi
     
-    # Atomic move
     mv "$temp_archive" "$JUNEST_ARCHIVE"
     
-    # Copy state file if exists
     if [[ -f "$STATE_DB" ]]; then
         cp "$STATE_DB" "${SGOINFRE}/june-state.db"
     fi
     
     local size=$(du -h "$JUNEST_ARCHIVE" | cut -f1)
-    log "Junest environment saved to sgoinfre (compressed: $size)"
+    log "Junest environment saved to ${YELLOW}sgoinfre${NC} (compressed: $size)"
 }
 
 ensure_junest() {
@@ -126,9 +136,8 @@ ensure_junest() {
     export JUNEST_HOME="$JUNEST_ROOT"
 }
 
-# create a shim in $SHIMS_DIR for an executable inside junest root
 create_shim() {
-    local target_path="$1"   # absolute path inside junest root
+    local target_path="$1"
     local name="$2"
     local shim_file="${SHIMS_DIR}/${name}"
     cat > "$shim_file" <<EOF
@@ -139,10 +148,9 @@ export JUNEST_HOME="${JUNEST_ROOT}"
 exec ${JUNEST_CMD} -- "${target_path}" "\$@"
 EOF
     chmod +x "$shim_file"
-    log "shim created: $shim_file -> $target_path"
+    log "shim created: ${GREEN}$shim_file${NC} -> $target_path"
 }
 
-# Record installed package in state file
 record_package() {
     local pkg="$1"
     local timestamp=$(date +%s)
@@ -156,11 +164,11 @@ cmd_install() {
     
     acquire_lock
     
-    log "Installing $pkg inside junest via yay/pacman..."
+    log "Installing ${GREEN}$pkg${NC} inside junest via yay/pacman..."
     log "Note: prefer '-bin' variants to avoid building from source."
     
     if [[ -n "$YAY_CMD" ]]; then
-        ${JUNEST_CMD} -- ${YAY_CMD} -S --noconfirm "$pkg" || { 
+        ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -S --noconfirm "$pkg" || { 
             cleanup_lock
             err "install failed"
             return 1
@@ -175,9 +183,8 @@ cmd_install() {
     
     log "Install finished. Generating shims..."
     
-    # Get list of binaries installed by the package
     local bins
-    bins=$(${JUNEST_CMD} -- ${YAY_CMD} -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
+    bins=$(${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
     
     if [[ -z "$bins" ]]; then
         log "No executables found in package"
@@ -194,7 +201,7 @@ cmd_install() {
     sync_to_sgoinfre
     
     cleanup_lock
-    log "Package $pkg installed and synced successfully!"
+    log "Package ${GREEN}$pkg${NC} installed and synced successfully!"
 }
 
 cmd_remove() {
@@ -203,11 +210,10 @@ cmd_remove() {
     
     acquire_lock
     
-    log "Removing $pkg from junest..."
+    log "Removing ${RED}$pkg${NC} from junest..."
     
-    # Remove shims for this package first
     local bins
-    bins=$(${JUNEST_CMD} -- ${YAY_CMD} -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
+    bins=$(${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
     
     while IFS= read -r bin_path; do
         if [[ -n "$bin_path" ]]; then
@@ -215,45 +221,37 @@ cmd_remove() {
             local shim_file="${SHIMS_DIR}/${bin_name}"
             if [[ -f "$shim_file" ]] && grep -q "#june-shim" "$shim_file" 2>/dev/null; then
                 rm -f "$shim_file"
-                log "Removed shim: $shim_file"
+                log "Removed shim: ${RED}$shim_file${NC}"
             fi
         fi
     done <<< "$bins"
     
-    # Remove package
-    ${JUNEST_CMD} -- ${YAY_CMD} -R --noconfirm "$pkg" || {
+    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -R --noconfirm "$pkg" || {
         cleanup_lock
         err "remove failed"
         return 1
     }
     
-    # Update state
     echo "${pkg}|$(date +%s)|removed" >> "$STATE_DB"
     sync_to_sgoinfre
     
     cleanup_lock
-    log "Package $pkg removed and changes synced!"
+    log "Package ${RED}$pkg${NC} removed and changes synced!"
 }
 
 cmd_list() {
     ensure_junest || return 1
     
-    log "Installed packages in junest:"
-    ${JUNEST_CMD} -- ${YAY_CMD} -Q || ${JUNEST_CMD} -- pacman -Q
-}
-
-cmd_sync() {
-    acquire_lock
-    sync_to_sgoinfre
-    cleanup_lock
+    log "Listing installed packages in junest..."
+    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Q || ${JUNEST_CMD} -- pacman -Q
 }
 
 cmd_search() {
     local query="$1"
     ensure_junest || return 1
     
-    log "Searching for packages matching '$query'..."
-    ${JUNEST_CMD} -- ${YAY_CMD} -Ss "$query" || ${JUNEST_CMD} -- pacman -Ss "$query"
+    log "Searching for packages matching '${YELLOW}$query${NC}'..."
+    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ss "$query" || ${JUNEST_CMD} -- pacman -Ss "$query"
 }
 
 cmd_update() {
@@ -262,36 +260,49 @@ cmd_update() {
     acquire_lock
     
     log "Updating package databases and installed packages..."
-    ${JUNEST_CMD} -- ${YAY_CMD} -Syu --noconfirm || ${JUNEST_CMD} -- pacman -Syu --noconfirm
+    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Syu --noconfirm || ${JUNEST_CMD} -- pacman -Syu --noconfirm
     
     sync_to_sgoinfre
     cleanup_lock
     
-    log "System updated and synced!"
+    log "${GREEN}System updated and synced!${NC}"
 }
 
 # Command dispatch
 if (( $# < 1 )); then
-    cat <<EOF
-Usage: june <command> [args]
-
-Commands:
-  install <pkg>    Install package inside junest (auto-syncs to sgoinfre)
-  remove <pkg>     Remove package from junest
-  list            List installed packages
-  search <query>  Search for packages
-  update          Update all packages
-  sync            Manually sync junest to sgoinfre
-
-Examples:
-  june install neovim-bin      # Install neovim (binary version)
-  june install code-bin        # Install VS Code
-  june search python           # Search for python packages
-  june list                    # Show all installed packages
-  
-Note: Prefer '-bin' package variants to avoid compilation.
-      Changes are automatically synced to sgoinfre after operations.
-EOF
+    if [[ $USE_COLORS -eq 1 ]]; then
+        printf "${BLUE}Usage:${NC} june <command> [args]\n\n"
+        printf "${YELLOW}Commands:${NC}\n"
+        printf "  ${BLUE}install ${GREEN}<pkg>${NC}   Install package inside junest (auto-syncs to sgoinfre)\n"
+        printf "  ${BLUE}remove ${GREEN}<pkg>${NC}    Remove package from junest\n"
+        printf "  ${BLUE}list${NC}            List installed packages\n"
+        printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
+        printf "  ${BLUE}update${NC}          Update all packages\n"
+        printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n\n"
+        printf "${YELLOW}Examples:${NC}\n"
+        printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
+        printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
+        printf "  june ${BLUE}search ${GREEN}python${NC}           ${GRAY}# Search for python packages${NC}\n"
+        printf "  june ${BLUE}list${NC}                    ${GRAY}# Show all installed packages${NC}\n\n"
+        printf "${YELLOW}Note:${NC} Prefer '-bin' package variants to avoid compilation.\n"
+        printf "      Changes are automatically synced to sgoinfre after operations.\n"
+    else
+        printf "Usage: june <command> [args]\n\n"
+        printf "Commands:\n"
+        printf "  install <pkg>   Install package inside junest (auto-syncs to sgoinfre)\n"
+        printf "  remove <pkg>    Remove package from junest\n"
+        printf "  list            List installed packages\n"
+        printf "  search <query>  Search for packages\n"
+        printf "  update          Update all packages\n"
+        printf "  sync            Manually sync junest to sgoinfre\n\n"
+        printf "Examples:\n"
+        printf "  june install neovim-bin      # Install neovim (binary version)\n"
+        printf "  june install code-bin        # Install VS Code\n"
+        printf "  june search python           # Search for python packages\n"
+        printf "  june list                    # Show all installed packages\n\n"
+        printf "Note: Prefer '-bin' package variants to avoid compilation.\n"
+        printf "      Changes are automatically synced to sgoinfre after operations.\n"
+    fi
     exit 0
 fi
 
