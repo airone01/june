@@ -239,6 +239,12 @@ cmd_remove() {
     log "Package ${RED}$pkg${NC} removed and changes synced!"
 }
 
+cmd_sync() {
+    acquire_lock
+    sync_to_sgoinfre
+    cleanup_lock
+}
+
 cmd_list() {
     ensure_junest || return 1
     
