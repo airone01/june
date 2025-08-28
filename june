@@ -37,12 +37,12 @@ COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
 # Check if stdout is a terminal for color output
 if [[ -t 1 ]]; then
     USE_COLORS=1
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[0;33m'
-    BLUE='\033[0;34m'
-    GRAY='\033[38;5;248m'
-    NC='\033[0m' # No Color
+    RED=$(tput setaf 1)
+    GREEN=$(tput setaf 2)
+    YELLOW=$(tput setaf 3)
+    BLUE=$(tput setaf 4)
+    GRAY=$(tput setaf 8)
+    NC=$(tput sgr0)
 else
     USE_COLORS=0
     RED=''
@@ -165,7 +165,7 @@ cmd_install() {
     acquire_lock
     
     log "Installing ${GREEN}$pkg${NC} inside junest via yay/pacman..."
-    log "Note: prefer '-bin' variants to avoid building from source."
+    log "Note: prefer '-bin' and avoid 'git' variants to avoid building from source."
     
     if [[ -n "$YAY_CMD" ]]; then
         ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -S --noconfirm "$pkg" || { 
@@ -270,39 +270,21 @@ cmd_update() {
 
 # Command dispatch
 if (( $# < 1 )); then
-    if [[ $USE_COLORS -eq 1 ]]; then
-        printf "${BLUE}Usage:${NC} june <command> [args]\n\n"
-        printf "${YELLOW}Commands:${NC}\n"
-        printf "  ${BLUE}install ${GREEN}<pkg>${NC}   Install package inside junest (auto-syncs to sgoinfre)\n"
-        printf "  ${BLUE}remove ${GREEN}<pkg>${NC}    Remove package from junest\n"
-        printf "  ${BLUE}list${NC}            List installed packages\n"
-        printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
-        printf "  ${BLUE}update${NC}          Update all packages\n"
-        printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n\n"
-        printf "${YELLOW}Examples:${NC}\n"
-        printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
-        printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
-        printf "  june ${BLUE}search ${GREEN}python${NC}           ${GRAY}# Search for python packages${NC}\n"
-        printf "  june ${BLUE}list${NC}                    ${GRAY}# Show all installed packages${NC}\n\n"
-        printf "${YELLOW}Note:${NC} Prefer '-bin' package variants to avoid compilation.\n"
-        printf "      Changes are automatically synced to sgoinfre after operations.\n"
-    else
-        printf "Usage: june <command> [args]\n\n"
-        printf "Commands:\n"
-        printf "  install <pkg>   Install package inside junest (auto-syncs to sgoinfre)\n"
-        printf "  remove <pkg>    Remove package from junest\n"
-        printf "  list            List installed packages\n"
-        printf "  search <query>  Search for packages\n"
-        printf "  update          Update all packages\n"
-        printf "  sync            Manually sync junest to sgoinfre\n\n"
-        printf "Examples:\n"
-        printf "  june install neovim-bin      # Install neovim (binary version)\n"
-        printf "  june install code-bin        # Install VS Code\n"
-        printf "  june search python           # Search for python packages\n"
-        printf "  june list                    # Show all installed packages\n\n"
-        printf "Note: Prefer '-bin' package variants to avoid compilation.\n"
-        printf "      Changes are automatically synced to sgoinfre after operations.\n"
-    fi
+    printf "${BLUE}Usage:${NC} june <command> [args]\n\n"
+    printf "${YELLOW}Commands:${NC}\n"
+    printf "  ${BLUE}install ${GREEN}<pkg>${NC}   Install package inside junest (auto-syncs to sgoinfre)\n"
+    printf "  ${BLUE}remove ${GREEN}<pkg>${NC}    Remove package from junest\n"
+    printf "  ${BLUE}list${NC}            List installed packages\n"
+    printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
+    printf "  ${BLUE}update${NC}          Update all packages\n"
+    printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n\n"
+    printf "${YELLOW}Examples:${NC}\n"
+    printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
+    printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
+    printf "  june ${BLUE}search ${GREEN}python${NC}           ${GRAY}# Search for python packages${NC}\n"
+    printf "  june ${BLUE}list${NC}                    ${GRAY}# Show all installed packages${NC}\n\n"
+    printf "${YELLOW}Note:${NC} Prefer '-bin' and avoid '-git' package variants to avoid compilation.\n"
+    printf "      Changes are automatically synced to sgoinfre after operations.\n"
     exit 0
 fi
 
