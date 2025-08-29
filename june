@@ -28,7 +28,7 @@ IFS=$'\n\t'
 
 # --- Configuration ---
 SGOINFRE="${HOME}/sgoinfre"
-GOINFRE="/tmp/goinfre"
+GOINFRE="/tmp"
 JUNEST_ROOT="${GOINFRE}/junest-root"
 JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
 JUNEST_LOCK="${SGOINFRE}/.junest.lock"
@@ -64,7 +64,7 @@ fi
 export JUNEST_HOME="$JUNEST_ROOT"
 
 # Create dirs if needed
-mkdir -p "$SHIMS_DIR" "$JUNEST_ROOT" "$SGOINFRE" "$GOINFRE"
+mkdir -p "$SHIMS_DIR" "$SGOINFRE" "$GOINFRE"
 
 # --- Helpers ---
 log() { 
@@ -456,7 +456,7 @@ cmd_startup() {
     acquire_lock
     
     if ! sync_from_sgoinfre; then
-        # If no archive or sync failed, initialize new environment
+        # Checking for only the directory here is kinda bad but well whatever
         if [[ ! -d "$JUNEST_ROOT" ]]; then
             init_junest
         fi
@@ -470,7 +470,6 @@ cmd_startup() {
         log --startup "Added $SHIMS_DIR to PATH"
     fi
     
-    # Set JUNEST_HOME for june commands
     export JUNEST_HOME="$JUNEST_ROOT"
     
     cleanup_lock
