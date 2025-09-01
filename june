@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # v0.1.2
+
 # june - user-space package manager for junest environments
 # Features:
 #  - june install <pkg>      : install package via yay (inside junest)
@@ -12,21 +13,8 @@
 #  - june doctor             : debug june environment setup
 #  - june junest-log        : log into june's junest env
 #  - june junest [args]      : the junest bin with the correct env vars
-# Notes:
-#  - June exists to solve the lack of a proper package managers for a group of students.
-#  - The apps cannot be installed directly with sudo, the users of this app never has access to admin rights.
-#  - The apps have to be installed in junest, and the junest config must be in ~/goinfre/june.
-#  - ~/goinfre is a bind mount to /goinfre/<USER>, same for ~/sgoinfre to /sgoinfre/<USER>.
-#  - The goinfre is a fast and large directory on the local machine, potentially deleted on logout.
-#  - The sgoinfre is a network directory with infinite storage, but it's slowish, and sometimes is unreachable.
-#  - The only other data accessible to users is their home, but its size limit is really small (10GB, not suitable for IDEs).
-#  - The goal of june is to have the junest data permanently installed in sgoinfre, but copied at login to the goinfre and ready for use.
-#  - Junest is for provides a separate environment to install apps, as well as the AUR, but native speeds. June is a wrapper to make it convenient for our use case.
-#  - So to recap, the app (a startup script has yet to be made) must be able to when making changes to the junest environment, change the version present in the sgoinfre. Using a strong compression is recommended.
-#  - Oh yeah, also june creates shims in order for the apps to be accessible through the host system.
-#  - Eventually, we will have a way to patch some apps (maybe a different install command with a finite list of apps) that need special configuration to run properly, I'm thinking IDEs (bc they cannot be allowed to write to home for space problems), process monitors (bc /proc is different in Junest).
 
-set -euo pipefail
+set -euo pipefail # :kappa:
 IFS=$'\n\t'
 
 # --- Configuration ---
@@ -41,6 +29,7 @@ JUNE_STATE="${SGOINFRE}/june-state.db"
 LOG_FILE="${GOINFRE}/june-startup.log"
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
 JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre")
+JUNEST_CMD_SHIM=($JUNEST_VANILLA_CMD ns --backend-args \"--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre\")
 YAY_CMD="yay"
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
 DECOMPRESS_CMD=(zstd -d)
@@ -101,8 +90,8 @@ show_help() {
     printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
     printf "  ${BLUE}update${NC}          Update all packages\n\n"
     printf "${YELLOW}Commands (image):${NC}\n"
-    printf "  ${BLUE}sync${NC}            Starts a manual sync of junest -> sgoinfre\n"
-    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs junest <- sgoinfre)\n"
+    printf "  ${BLUE}sync${NC}            Syncs local junest → sgoinfre\n"
+    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs local junest ← sgoinfre)\n"
     printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
     printf "${YELLOW}Commands (debug):${NC}\n"
     printf "  ${BLUE}junest-log${NC}      Log into junest.${NC}\n"
@@ -111,7 +100,7 @@ show_help() {
     printf "                  ${YELLOW}Use if you know what you're doing/if you're debugging only.${NC}\n"
     printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
     printf "${YELLOW}Global options:${NC}\n"
-    printf "  ${BLUE}--help${NC}          Show this help message\n\n"
+    printf "  ${BLUE}-h, --help${NC}      Show this help message\n\n"
     printf "${YELLOW}Examples:${NC}\n"
     printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
     printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
@@ -120,9 +109,9 @@ show_help() {
     printf "  june ${BLUE}list --all${NC}              ${GRAY}# Show all installed packages${NC}\n"
     printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
     printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
-    printf "${YELLOW}Note:${NC} Avoid '-git' variants to not build from source.\n"
-    printf "      Changes are automatically synced to sgoinfre after operations.\n"
-    printf "      Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
+    printf "${YELLOW}Notes:${NC} Avoid '-git' variants to not build from source.\n"
+    printf "       Changes are automatically synced to sgoinfre after operations.\n"
+    printf "       Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
 }
 
 cleanup_lock() {
@@ -174,7 +163,10 @@ sync_to_sgoinfre() {
         fi
     fi
 
-    mv "$temp_archive" "$JUNEST_ARCHIVE"
+    mv "$temp_archive" "$JUNEST_ARCHIVE" || {
+        err "Could not move archive"
+        return 1;
+    }
 
     if [[ -f "$STATE_DB" ]]; then
         cp "$STATE_DB" "${SGOINFRE}/june-state.db"
@@ -208,7 +200,7 @@ create_shim() {
 #june-shim
 # Auto-generated by june
 export JUNEST_HOME="${JUNEST_ROOT}"
-exec ${JUNEST_CMD[@]} -- "${target_path}" "\$@"
+exec ${JUNEST_CMD_SHIM[@]} -- "${target_path}" "\$@"
 EOF
     chmod +x "$shim_file"
     log "Shim created: ${GREEN}$shim_file${NC} -> $target_path"
@@ -421,12 +413,6 @@ cmd_remove() {
 
     log "Removing ${RED}$formatted${NC} from junest..."
 
-    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -R --noconfirm "${pkgs[@]}" || {
-        cleanup_lock
-        err "remove failed"
-        return 1
-    }
-
     for pkg in "${pkgs[@]}"; do
         local bins
         bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
@@ -445,13 +431,17 @@ cmd_remove() {
         echo "${pkg}|$(date +%s)|removed" >> "$STATE_DB"
     done
 
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -R --noconfirm "${pkgs[@]}" || {
+        cleanup_lock
+        err "remove failed"
+        return 1
+    }
+
     sync_to_sgoinfre
 
     cleanup_lock
     log "Package(s) ${RED}$formatted${NC} removed and changes synced!"
 }
-
-# TODO:  PATCH MULTIPLE REMOVES AT THE SAME TIME
 
 cmd_sync() {
     acquire_lock
@@ -554,7 +544,10 @@ cmd_startup() {
     # Check if ~/.junest exists (from previous default installation)
     if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
         log --startup "Found junest in default location, moving to goinfre..."
-        mv "$HOME/.junest" "$JUNEST_ROOT"
+        mv "$HOME/.junest" "$JUNEST_ROOT" || {
+            err "Could not move junest dir"
+            return 1;
+        }
     fi
 
     acquire_lock
@@ -729,7 +722,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 # Check for global --help flag first
-if [[ $# -gt 0 && "$1" == "--help" ]]; then
+if [[ $# -gt 0 && "$1" == "--help" || "$1" == "-h" ]]; then
     show_help
     exit 0
 fi
