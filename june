@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# june - prototype user-space package manager for junest environments
-# Prototype features:
+# v0.1.2
+# june - user-space package manager for junest environments
+# Features:
 #  - june install <pkg>      : install package via yay (inside junest)
 #  - june sync               : manually sync to sgoinfre
 #  - june list               : list user-installed packages
@@ -9,7 +10,8 @@
 #  - june startup            : sync junest environment from sgoinfre to goinfre at login
 #  - june clean-june         : clean up old junest installations and reset june
 #  - june doctor             : debug june environment setup
-#  - june junest             : log into june's junest env
+#  - june junest-log        : log into june's junest env
+#  - june junest [args]      : the junest bin with the correct env vars
 # Notes:
 #  - June exists to solve the lack of a proper package managers for a group of students.
 #  - The apps cannot be installed directly with sudo, the users of this app never has access to admin rights.
@@ -37,7 +39,8 @@ SHIMS_DIR="${HOME}/bin"
 STATE_DB="${GOINFRE}/june-state.db"
 JUNE_STATE="${SGOINFRE}/june-state.db"
 LOG_FILE="${GOINFRE}/june-startup.log"
-JUNEST_CMD="$(command -v junest 2>/dev/null || true)"
+JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
+JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre")
 YAY_CMD="yay"
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
 DECOMPRESS_CMD=(zstd -d)
@@ -91,18 +94,22 @@ err() {
 show_help() {
     printf "${BLUE}Usage:${NC} june [--help] <command> [args]\n\n"
     printf "${YELLOW}Commands (packages):${NC}\n"
-    printf "  ${BLUE}install ${GREEN}<pkg>${NC}   Install package inside junest (auto-syncs to sgoinfre)\n"
-    printf "  ${BLUE}remove ${GREEN}<pkg>${NC}    Remove package from junest\n"
+    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to sgoinfre)\n"
+    printf "  ${BLUE}remove ${GREEN}<pkgs>${NC}   Remove package(s)\n"
     printf "  ${BLUE}list${NC}            List user-installed packages\n"
-    printf "  ${BLUE}list --all${NC}      List all installed packages in junest\n"
+    printf "  ${BLUE}list --all${NC}      List all installed packages\n"
     printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
     printf "  ${BLUE}update${NC}          Update all packages\n\n"
     printf "${YELLOW}Commands (image):${NC}\n"
-    printf "  ${BLUE}sync${NC}            Manually sync junest to sgoinfre\n"
-    printf "  ${BLUE}startup${NC}         Sync junest environment from sgoinfre (automatically ran at login)\n"
-    printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n"
-    printf "  ${BLUE}junest${NC}          Boot into junest. ${YELLOW}Use if you know what you're doing only.${NC}\n"
-    printf "  ${BLUE}doctor${NC}          Debug june environment setup\n\n"
+    printf "  ${BLUE}sync${NC}            Starts a manual sync of junest -> sgoinfre\n"
+    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs junest <- sgoinfre)\n"
+    printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
+    printf "${YELLOW}Commands (debug):${NC}\n"
+    printf "  ${BLUE}junest-log${NC}      Log into junest.${NC}\n"
+    printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
+    printf "  ${BLUE}junest${NC}          Launches the Junest binary.${NC}\n"
+    printf "                  ${YELLOW}Use if you know what you're doing/if you're debugging only.${NC}\n"
+    printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
     printf "${YELLOW}Global options:${NC}\n"
     printf "  ${BLUE}--help${NC}          Show this help message\n\n"
     printf "${YELLOW}Examples:${NC}\n"
@@ -113,12 +120,13 @@ show_help() {
     printf "  june ${BLUE}list --all${NC}              ${GRAY}# Show all installed packages${NC}\n"
     printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
     printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
-    printf "${YELLOW}Note:${NC} Prefer '-bin' and avoid '-git' package variants to avoid compilation.\n"
+    printf "${YELLOW}Note:${NC} Avoid '-git' variants to not build from source.\n"
     printf "      Changes are automatically synced to sgoinfre after operations.\n"
+    printf "      Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
 }
 
 cleanup_lock() {
-    rm -f "$JUNEST_LOCK"
+    rm "$JUNEST_LOCK" 2>/dev/null && log "June lock freed" || true
 }
 
 acquire_lock() {
@@ -136,6 +144,7 @@ acquire_lock() {
         rm -f "$JUNEST_LOCK"
     fi
 
+    log "June lock taken"
     log "$$" > "$JUNEST_LOCK"
     trap cleanup_lock EXIT
 }
@@ -176,7 +185,7 @@ sync_to_sgoinfre() {
 }
 
 ensure_junest() {
-    if [[ -z "$JUNEST_CMD" ]]; then
+    if [[ -z $JUNEST_CMD[0] ]]; then
         err "junest not found in PATH. Install junest first."
         err "Run: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
         return 1
@@ -199,10 +208,10 @@ create_shim() {
 #june-shim
 # Auto-generated by june
 export JUNEST_HOME="${JUNEST_ROOT}"
-exec ${JUNEST_CMD} -- "${target_path}" "\$@"
+exec ${JUNEST_CMD[@]} -- "${target_path}" "\$@"
 EOF
     chmod +x "$shim_file"
-    log "shim created: ${GREEN}$shim_file${NC} -> $target_path"
+    log "Shim created: ${GREEN}$shim_file${NC} -> $target_path"
 }
 
 record_package() {
@@ -346,21 +355,27 @@ verify_shims() {
 
 # --- Commands ---
 cmd_install() {
-    local pkg="$1"
+    local pkgs=("$@")
     ensure_junest || return 1
     acquire_lock
 
-    log "Installing ${GREEN}$pkg${NC} inside junest via yay/pacman..."
-    log "Note: prefer '-bin' and avoid 'git' variants to avoid building from source."
+    # Pretty packages display
+    for e in "${pkgs[@]}"; do
+        out+="${GREEN}${e}${NC}, "
+    done
+    formatted="${out%, }"
+
+    log "Installing ${GREEN}$formatted${NC} inside junest via yay/pacman..."
+    log "Note: avoid '-git' variants to not build from source."
 
     if [[ -n "$YAY_CMD" ]]; then
-        ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -S --noconfirm "$pkg" || {
+        "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -S --noconfirm "${pkgs[@]}" || {
             cleanup_lock
             err "install failed"
             return 1
         }
     else
-        ${JUNEST_CMD} -- pacman -S --noconfirm "$pkg" || {
+        "${JUNEST_CMD[@]}" -- pacman -S --noconfirm "${pkgs[@]}" || {
             cleanup_lock
             err "install failed"
             return 1
@@ -368,61 +383,75 @@ cmd_install() {
     fi
 
     log "Install finished. Generating shims..."
-    local bins
-    bins=$(${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
+    for pkg in "${pkgs[@]}"; do
+        local bins
+        bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
 
-    if [[ -z "$bins" ]]; then
-        log "No executables found in package"
-    else
-        while IFS= read -r bin_path; do
-            if [[ -n "$bin_path" ]]; then
-                local bin_name=$(basename "$bin_path")
-                create_shim "$bin_path" "$bin_name"
-            fi
-        done <<< "$bins"
-    fi
+        if [[ -z "$bins" ]]; then
+            log "No executables found in package"
+        else
+            while IFS= read -r bin_path; do
+                if [[ -n "$bin_path" ]]; then
+                    local bin_name=$(basename "$bin_path")
+                    create_shim "$bin_path" "$bin_name"
+                fi
+            done <<< "$bins"
+        fi
 
-    record_package "$pkg"
+        record_package "$pkg"
+    done
+
     sync_to_sgoinfre
 
     cleanup_lock
-    log "Package ${GREEN}$pkg${NC} installed and synced successfully!"
+    log "Package(s) ${GREEN}$formatted${NC} installed and synced successfully!"
 }
 
 cmd_remove() {
-    local pkg="$1"
+    local pkgs=("$@")
     ensure_junest || return 1
 
     acquire_lock
 
-    log "Removing ${RED}$pkg${NC} from junest..."
+    # Pretty packages display
+    for e in "${pkgs[@]}"; do
+        out+="${GREEN}${e}${NC}, "
+    done
+    formatted="${out%, }"
 
-    local bins
-    bins=$(${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
+    log "Removing ${RED}$formatted${NC} from junest..."
 
-    while IFS= read -r bin_path; do
-        if [[ -n "$bin_path" ]]; then
-            local bin_name=$(basename "$bin_path")
-            local shim_file="${SHIMS_DIR}/${bin_name}"
-            if [[ -f "$shim_file" ]] && grep -q "#june-shim" "$shim_file" 2>/dev/null; then
-                rm -f "$shim_file"
-                log "Removed shim: ${RED}$shim_file${NC}"
-            fi
-        fi
-    done <<< "$bins"
-
-    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -R --noconfirm "$pkg" || {
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -R --noconfirm "${pkgs[@]}" || {
         cleanup_lock
         err "remove failed"
         return 1
     }
 
-    echo "${pkg}|$(date +%s)|removed" >> "$STATE_DB"
+    for pkg in "${pkgs[@]}"; do
+        local bins
+        bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
+
+        while IFS= read -r bin_path; do
+            if [[ -n "$bin_path" ]]; then
+                local bin_name=$(basename "$bin_path")
+                local shim_file="${SHIMS_DIR}/${bin_name}"
+                if [[ -f "$shim_file" ]] && grep -q "#june-shim" "$shim_file" 2>/dev/null; then
+                    rm -f "$shim_file"
+                    log "Removed shim: ${RED}$shim_file${NC}"
+                fi
+            fi
+        done <<< "$bins"
+
+        echo "${pkg}|$(date +%s)|removed" >> "$STATE_DB"
+    done
+
     sync_to_sgoinfre
 
     cleanup_lock
-    log "Package ${RED}$pkg${NC} removed and changes synced!"
+    log "Package(s) ${RED}$formatted${NC} removed and changes synced!"
 }
+
+# TODO:  PATCH MULTIPLE REMOVES AT THE SAME TIME
 
 cmd_sync() {
     acquire_lock
@@ -450,7 +479,7 @@ cmd_list() {
     ensure_junest || return 1
 
     if [[ "$show_all" == "true" ]]; then
-        ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Q || ${JUNEST_CMD} -- pacman -Q
+        "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q || "${JUNEST_CMD[@]}" -- pacman -Q
     else
         if [[ ! -f "$STATE_DB" ]]; then
             log "No user-installed packages found (state database not found)"
@@ -486,7 +515,6 @@ cmd_list() {
             fi
         fi
 
-        log ""
         log "Use 'june list --all' to see all packages in junest environment"
     fi
 }
@@ -496,7 +524,7 @@ cmd_search() {
     ensure_junest || return 1
 
     log "Searching for packages matching '${YELLOW}$query${NC}'..."
-    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Ss "$query" || ${JUNEST_CMD} -- pacman -Ss "$query"
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ss "$query" || "${JUNEST_CMD[@]}" -- pacman -Ss "$query"
 }
 
 cmd_update() {
@@ -505,7 +533,7 @@ cmd_update() {
     acquire_lock
 
     log "Updating package databases and installed packages..."
-    ${JUNEST_CMD} -- ${YAY_CMD} --color=auto -Syu --noconfirm || ${JUNEST_CMD} -- pacman -Syu --noconfirm
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Syu --noconfirm || "${JUNEST_CMD[@]}" -- pacman -Syu --noconfirm
 
     sync_to_sgoinfre
     cleanup_lock
@@ -555,6 +583,7 @@ cmd_startup() {
 cmd_clean_june() {
     log "${YELLOW}This will clean up all junest installations and june data, junest installation, and packages."
     log "${YELLOW}You will need to reinstall all packages after this.${NC}"
+    log "${RED}**You should probably note down your installed packages** ${YELLOW}(\`june ls\`) so it's easier to reinstall them later on.${NC}"
     read -p "Continue? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -600,7 +629,6 @@ cmd_clean_june() {
     fi
 
     log "Cleanup complete!"
-    log ""
     log "You can now run 'june startup' to initialize a fresh environment."
 }
 
@@ -714,11 +742,11 @@ fi
 
 case "$1" in
     install)
-        (( $# == 2 )) || { err "install requires a package name"; exit 2; }
-        cmd_install "$2" ;;
+        (( $# >= 2 )) || { err "install requires at least one package name"; exit 2; }
+        cmd_install "${@:2}" ;;
     remove|uninstall)
-        (( $# == 2 )) || { err "remove requires a package name"; exit 2; }
-        cmd_remove "$2" ;;
+        (( $# >= 2 )) || { err "remove requires at least one package name"; exit 2; }
+        cmd_remove "${@:2}" ;;
     list|ls)
         shift
         cmd_list "$@" ;;
@@ -735,8 +763,10 @@ case "$1" in
         cmd_clean_june ;;
     doctor)
         cmd_doctor ;;
+    junest-log)
+        "${JUNEST_CMD[@]}" ;;
     junest)
-        ${JUNEST_CMD} ;;
+        "$JUNEST_VANILLA_CMD" "${@:2}" ;;
     *)
         err "unknown command: $1"
         err "Use 'june --help' for usage information"
