@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
 # v0.1.2
 
-# june - user-space package manager for junest environments
-# Features:
-#  - june install <pkg>      : install package via yay (inside junest)
-#  - june sync               : manually sync to sgoinfre
-#  - june list               : list user-installed packages
-#  - june list --all         : list all installed packages
-#  - june remove <pkg>       : remove package
-#  - june startup            : sync junest environment from sgoinfre to goinfre at login
-#  - june clean-june         : clean up old junest installations and reset june
-#  - june doctor             : debug june environment setup
-#  - june junest-log        : log into june's junest env
-#  - june junest [args]      : the junest bin with the correct env vars
-
 set -euo pipefail # :kappa:
 IFS=$'\n\t'
 
