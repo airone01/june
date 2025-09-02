@@ -70,7 +70,7 @@ err() {
 show_help() {
     printf "${BLUE}Usage:${NC} june [--help] <command> [args]\n\n"
     printf "${YELLOW}Commands (packages):${NC}\n"
-    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to persistent)\n"
+    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to persistent storage)\n"
     printf "  ${BLUE}remove ${GREEN}<pkgs>${NC}   Remove package(s)\n"
     printf "  ${BLUE}list${NC}            List user-installed packages\n"
     printf "  ${BLUE}list --all${NC}      List all installed packages\n"
@@ -97,7 +97,7 @@ show_help() {
     printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
     printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
     printf "${YELLOW}Notes:${NC} Avoid '-git' variants to not build from source.\n"
-    printf "       Changes are automatically synced to persistent storgae after operations.\n"
+    printf "       Changes are automatically synced to persistent storage after operations.\n"
     printf "       Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
 }
 
@@ -706,7 +706,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 # Check for global --help flag first
-if [[ $# -gt 0 && "$1" == "--help" || "$1" == "-h" ]]; then
+if [[ $# -gt 0 && ("$1" == "--help" || "$1" == "-h") ]]; then
     show_help
     exit 0
 fi
