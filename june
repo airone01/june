@@ -83,7 +83,7 @@ show_help() {
     printf "${YELLOW}Commands (debug):${NC}\n"
     printf "  ${BLUE}junest-log${NC}      Log into junest.${NC}\n"
     printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
-    printf "  ${BLUE}junest${NC}          Launches the Junest binary.${NC}\n"
+    printf "  ${BLUE}junest ${GRAY}[args]${NC}   Launches the Junest binary.${NC}\n"
     printf "                  ${YELLOW}Use if you know what you're doing/if you're debugging only.${NC}\n"
     printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
     printf "${YELLOW}Global options:${NC}\n"
