@@ -42,13 +42,13 @@ The reasons are technical but boil down to:
 - Near-native execution speeds.
 - June acts as a **wrapper** to simplify usage:
 - Creates **shims**, so installed apps are accessible directly from the host system.
-- Manages syncing between `goinfre` (fast, temporary) and `sgoinfre` (persistent, slow).
+- Manages syncing between `volatile` (fast, temporary) and `sgoinfre` (persistent, slow).
 
 ## Storage Considerations
 - Home storage is limited to **10GB** (too small for IDEs or large applications).
 - The **goinfre** exists for fat storage, but its living time is unpredictable (can be removed anytime).
 - **sgoinfre** has network-based, *virtually infinite* storage, but it's slow.
-- So the solution was saving apps on **sgoinfre**, load them on session load to the **goinfre** (we went with `/tmp` instead)
+- So the solution was saving apps on **sgoinfre**, load them during session load to the **volatile** (volatile used to be `~/goinfre`, but we went with `/tmp` instead)
 - Links to apps (custom script with env and all, called *shims*) are stored in **~/home/bin**.
 
 ## Future Plans

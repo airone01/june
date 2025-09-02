@@ -6,14 +6,14 @@ IFS=$'\n\t'
 
 # --- Configuration ---
 SGOINFRE="${HOME}/sgoinfre"
-GOINFRE="/tmp"
-JUNEST_ROOT="${GOINFRE}/junest-root"
+VOLATILE="/tmp"
+JUNEST_ROOT="${VOLATILE}/junest-root"
 JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
 JUNEST_LOCK="${SGOINFRE}/.junest.lock"
 SHIMS_DIR="${HOME}/bin"
-STATE_DB="${GOINFRE}/june-state.db"
+STATE_DB="${VOLATILE}/june-state.db"
 JUNE_STATE="${SGOINFRE}/june-state.db"
-LOG_FILE="${GOINFRE}/june-startup.log"
+LOG_FILE="${VOLATILE}/june-startup.log"
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
 JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre")
 JUNEST_CMD_SHIM=($JUNEST_VANILLA_CMD ns --backend-args \"--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre\")
@@ -44,7 +44,7 @@ fi
 export JUNEST_HOME="$JUNEST_ROOT"
 
 # Create dirs if needed
-mkdir -p "$SHIMS_DIR" "$SGOINFRE" "$GOINFRE"
+mkdir -p "$SHIMS_DIR" "$SGOINFRE" "$VOLATILE"
 
 # --- Helpers ---
 log() {
@@ -135,7 +135,7 @@ sync_to_sgoinfre() {
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
 
     if ! command -v pv >/dev/null 2>&1; then
-        if ! tar -cf - -C "$GOINFRE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+        if ! tar -cf - -C "$VOLATILE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
             return 1
@@ -143,7 +143,7 @@ sync_to_sgoinfre() {
     else
         local dir_size
         dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
-        if ! tar -cf - -C "$GOINFRE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+        if ! tar -cf - -C "$VOLATILE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
             return 1
@@ -201,7 +201,7 @@ record_package() {
 
 # --- Startup Functions ---
 ensure_dirs() {
-    mkdir -p "$SGOINFRE" "$GOINFRE" "$SHIMS_DIR"
+    mkdir -p "$SGOINFRE" "$VOLATILE" "$SHIMS_DIR"
 
     # Check if sgoinfre is accessible
     if ! touch "${SGOINFRE}/.test" 2>/dev/null; then
@@ -236,11 +236,11 @@ sync_from_sgoinfre() {
         rm -rf "$JUNEST_ROOT"
     fi
 
-    log --startup "Decompressing junest archive to goinfre..."
+    log --startup "Decompressing junest archive to volatile..."
     mkdir -p "$JUNEST_ROOT"
 
     if ! command -v pv >/dev/null 2>&1; then
-        if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+        if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
             err --startup "Failed to decompress junest archive"
             rm -rf "$JUNEST_ROOT"
             return 1
@@ -250,14 +250,14 @@ sync_from_sgoinfre() {
         archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
         if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
             err --startup "Failed to get archive size, falling back to decompression without progress bar"
-            if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$GOINFRE"; then
+            if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
                 err --startup "Failed to decompress junest archive"
                 rm -rf "$JUNEST_ROOT"
                 return 1
             fi
         else
             log --startup "Archive size: $archive_size bytes"
-            if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$GOINFRE"; then
+            if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$VOLATILE"; then
                 err --startup "Failed to decompress junest archive"
                 rm -rf "$JUNEST_ROOT"
                 return 1
@@ -530,7 +530,7 @@ cmd_startup() {
 
     # Check if ~/.junest exists (from previous default installation)
     if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
-        log --startup "Found junest in default location, moving to goinfre..."
+        log --startup "Found junest in default location, moving to volatile..."
         mv "$HOME/.junest" "$JUNEST_ROOT" || {
             err "Could not move junest dir"
             return 1;
@@ -579,7 +579,7 @@ cmd_clean_june() {
         rm -rf "$HOME/.junest"
     fi
 
-    # Remove goinfre junest
+    # Remove volatile junest
     if [[ -d "$JUNEST_ROOT" ]]; then
         log "Removing $JUNEST_ROOT..."
         rm -rf "$JUNEST_ROOT"
