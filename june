@@ -5,14 +5,14 @@ set -euo pipefail # :kappa:
 IFS=$'\n\t'
 
 # --- Configuration ---
-SGOINFRE="${HOME}/sgoinfre"
+PERSISTENT="${HOME}/sgoinfre"
 VOLATILE="/tmp"
 JUNEST_ROOT="${VOLATILE}/junest-root"
-JUNEST_ARCHIVE="${SGOINFRE}/junest-root.tar.zst"
-JUNEST_LOCK="${SGOINFRE}/.junest.lock"
+JUNEST_ARCHIVE="${PERSISTENT}/junest-root.tar.zst"
+JUNEST_LOCK="${PERSISTENT}/.junest.lock"
 SHIMS_DIR="${HOME}/bin"
 STATE_DB="${VOLATILE}/june-state.db"
-JUNE_STATE="${SGOINFRE}/june-state.db"
+JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
 JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre")
@@ -44,7 +44,7 @@ fi
 export JUNEST_HOME="$JUNEST_ROOT"
 
 # Create dirs if needed
-mkdir -p "$SHIMS_DIR" "$SGOINFRE" "$VOLATILE"
+mkdir -p "$SHIMS_DIR" "$PERSISTENT" "$VOLATILE"
 
 # --- Helpers ---
 log() {
@@ -70,15 +70,15 @@ err() {
 show_help() {
     printf "${BLUE}Usage:${NC} june [--help] <command> [args]\n\n"
     printf "${YELLOW}Commands (packages):${NC}\n"
-    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to sgoinfre)\n"
+    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to persistent)\n"
     printf "  ${BLUE}remove ${GREEN}<pkgs>${NC}   Remove package(s)\n"
     printf "  ${BLUE}list${NC}            List user-installed packages\n"
     printf "  ${BLUE}list --all${NC}      List all installed packages\n"
     printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
     printf "  ${BLUE}update${NC}          Update all packages\n\n"
     printf "${YELLOW}Commands (image):${NC}\n"
-    printf "  ${BLUE}sync${NC}            Syncs local junest → sgoinfre\n"
-    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs local junest ← sgoinfre)\n"
+    printf "  ${BLUE}sync${NC}            Syncs volatile → persistent\n"
+    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent)\n"
     printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
     printf "${YELLOW}Commands (debug):${NC}\n"
     printf "  ${BLUE}junest-log${NC}      Log into junest.${NC}\n"
@@ -97,7 +97,7 @@ show_help() {
     printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
     printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
     printf "${YELLOW}Notes:${NC} Avoid '-git' variants to not build from source.\n"
-    printf "       Changes are automatically synced to sgoinfre after operations.\n"
+    printf "       Changes are automatically synced to persistent storgae after operations.\n"
     printf "       Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
 }
 
@@ -131,7 +131,7 @@ sync_to_sgoinfre() {
         return 1
     fi
 
-    log "Syncing junest environment to ${YELLOW}sgoinfre${NC}..."
+    log "Syncing junest environment to ${YELLOW}persistent storage${NC}..."
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
 
     if ! command -v pv >/dev/null 2>&1; then
@@ -156,11 +156,11 @@ sync_to_sgoinfre() {
     }
 
     if [[ -f "$STATE_DB" ]]; then
-        cp "$STATE_DB" "${SGOINFRE}/june-state.db"
+        cp "$STATE_DB" "${PERSISTENT}/june-state.db"
     fi
 
     local size=$(du -h "$JUNEST_ARCHIVE" | cut -f1)
-    log "Junest environment saved to ${YELLOW}sgoinfre${NC} (compressed: $size)"
+    log "Junest environment saved to ${YELLOW}persistent storage${NC} (compressed: $size)"
 }
 
 ensure_junest() {
@@ -201,23 +201,23 @@ record_package() {
 
 # --- Startup Functions ---
 ensure_dirs() {
-    mkdir -p "$SGOINFRE" "$VOLATILE" "$SHIMS_DIR"
+    mkdir -p "$PERSISTENT" "$VOLATILE" "$SHIMS_DIR"
 
-    # Check if sgoinfre is accessible
-    if ! touch "${SGOINFRE}/.test" 2>/dev/null; then
-        err --startup "sgoinfre not accessible at ${SGOINFRE}"
+    # Check if persistent storage is accessible
+    if ! touch "${PERSISTENT}/.test" 2>/dev/null; then
+        err --startup "persistent storage not accessible at ${PERSISTENT}"
         return 1
     fi
-    rm -f "${SGOINFRE}/.test"
+    rm -f "${PERSISTENT}/.test"
 }
 
 sync_from_sgoinfre() {
     if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
-        log --startup "No junest archive found in sgoinfre - will create fresh environment"
+        log --startup "No junest archive found in persistent storage - will create fresh environment"
         return 1
     fi
 
-    log --startup "Found junest archive in sgoinfre ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
+    log --startup "Found junest archive in persistent storage ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
 
     # Check if local junest already exists and is up-to-date
     if [[ -d "$JUNEST_ROOT" ]]; then
@@ -308,7 +308,7 @@ init_junest() {
         yay -S --noconfirm --needed base-devel git
     " || log --startup "Note: junest env installation failed"
 
-    log --startup "Junest initialized - saving to sgoinfre for persistence..."
+    log --startup "Junest initialized - saving to persistent storage..."
     sync_to_sgoinfre
 }
 
@@ -585,9 +585,9 @@ cmd_clean_june() {
         rm -rf "$JUNEST_ROOT"
     fi
 
-    # Remove sgoinfre archive
+    # Remove persistsnt archive
     if [[ -f "$JUNEST_ARCHIVE" ]]; then
-        log "Removing sgoinfre archive..."
+        log "Removing persistent archive..."
         rm -f "$JUNEST_ARCHIVE"
     fi
 
@@ -623,9 +623,6 @@ cmd_doctor() {
 
     log "  $JUNEST_ROOT: "
     [[ -d "$JUNEST_ROOT" ]] && log "exists" || err "NOT FOUND"
-
-    log "  ~/sgoinfre: "
-    [[ -d "$HOME/sgoinfre" ]] && log "exists" || err "NOT FOUND"
 
     log "  ~/bin: "
     [[ -d "$HOME/bin" ]] && log "exists" || err "NOT FOUND"
