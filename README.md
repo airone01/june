@@ -16,12 +16,31 @@
 </h4>
 
 ## Overview
+
 - **June** exists to solve the lack of proper package managers for a group of in 42 Lyon Auvergne-Rhône-Alpes.
 - The goal is to provide a way to install and run applications without requiring `sudo` or admin rights.
 - June wraps around **Junest** to provide a convenient workflow in this restricted environment.
-- Why does this exist? See right below.
+- Why does this exist? See the "Why" section.
 
-## Why
+## Installation
+
+Install script is planned out, for now this is v0 so bear with me :-)
+
+1. Install [junest](https://github.com/fsquillace/junest)! You can do that by pasting the following command in your terminal `git clone https://github.com/fsquillace/junest.git ~/.local/share/junest`, and adding `export PATH=~/.local/share/junest/bin:$PATH` to your `.bashrc`, `.zshrc`, ...
+2. Add the content of the [`.profile`](./.profile) file of this repo to your own `.profile` (not `.bashrc` or `.bash_profile`, etc... !).
+3. Restart your shell.
+4. Run `june startup`.
+
+After the installation, you will be able to install packages with `june install <pkgs>`, and they will be available in your PATH.
+
+## Usage
+
+Run `june -h` :-)
+
+## Details
+
+### Why
+
 The reasons are technical but boil down to:
 - See "Storage Considerations".
 - Simply using `chroot` requires root.
@@ -29,30 +48,39 @@ The reasons are technical but boil down to:
 - `bwrap`, `groot` and others are already encapsulated inside of Junest.
 - Making a package manager from scratch is at best long and tedious. Junest uses an ArchLinux namespace, meaning yay and AUR.
 
-## What it does
-- Keeps **Junest data permanently** in `~/sgoinfre`.
+### What it does
+
+- Keeps **Junest data permanently** in the persistent storage.
 - On login, copies the data from `~/sgoinfre` → `/tmp` for fast local use (yes, the `tmp`, read "Storage Considerations").
 - **goinfre** and **sgoinfre** are bind-mounted to the Junest env for ease of access.
-- Any changes made in the environment is **propagated back to sgoinfre** (automatically or with the `sync` command).
+- Any changes made in the environment is **propagated back to the persistent storage** (automatically or with the `sync` command).
 
-## How It Works
+### How It Works
+
 - Junest provides:
 - A separate environment for installing applications.
 - Access to the **AUR**.
 - Near-native execution speeds.
 - June acts as a **wrapper** to simplify usage:
 - Creates **shims**, so installed apps are accessible directly from the host system.
-- Manages syncing between `volatile` (fast, temporary) and `sgoinfre` (persistent, slow).
+- Manages syncing between `volatile` (fast, temporary) and `persistent` (slow).
 
-## Storage Considerations
+### Storage Considerations
+
 - Home storage is limited to **10GB** (too small for IDEs or large applications).
-- The **goinfre** exists for fat storage, but its living time is unpredictable (can be removed anytime).
-- **sgoinfre** has network-based, *virtually infinite* storage, but it's slow.
-- So the solution was saving apps on **sgoinfre**, load them during session load to the **volatile** (volatile used to be `~/goinfre`, but we went with `/tmp` instead)
-- Links to apps (custom script with env and all, called *shims*) are stored in **~/home/bin**.
+- The **goinfre** (and the `/tmp` dir as well) exists for fat storage, but its living time is unpredictable (can be removed anytime). __This was used for the volatile storage**.
+- **sgoinfre** has network-based, *virtually infinite* storage, but it's slow. __This is used for the persistent storage**.
+- So the solution was saving apps on **sgoinfre**, load them during session load to the **volatile** (volatile used to be `~/goinfre`, but we went with `/tmp` instead).
+- We compress and copy the `.junest` dir to "save/load apps".
+- Wrappers to apps (custom script with env and all, called *shims*) are stored in **~/home/bin**.
 
-## Future Plans
+### Future Plans
+
 - Add a **startup script** to handle setup, syncing, and app launch automatically.
 - Support **special patches** for specific applications that need extra configuration to run correctly:
 - IDEs → prevent them from writing large amounts of data into `~/home`.
+  - In general find a way to avoid apps taking too much freedom of space.
+  - This is what `bwrap` is for, but because we bind-mount HOME, apps can write there and fill the disk (looking at you, Android Studio).
+  - One solution would be to have special patches with different bind-mounts when installing apps, but require special cases, so more work.
+  - This is probably what we'll be going with anyways
 - Process monitors → handle `/proc` compatibility with Junest.
