@@ -68,8 +68,8 @@ The reasons are technical but boil down to:
 ### Storage Considerations
 
 - Home storage is limited to **10GB** (too small for IDEs or large applications).
-- The **goinfre** (and the `/tmp` dir as well) exists for fat storage, but its living time is unpredictable (can be removed anytime). __This was used for the volatile storage**.
-- **sgoinfre** has network-based, *virtually infinite* storage, but it's slow. __This is used for the persistent storage**.
+- The **goinfre** (and the `/tmp` dir as well) exists for fat storage, but its living time is unpredictable (can be removed anytime). __This was used for the volatile storage__.
+- **sgoinfre** has network-based, *virtually infinite* storage, but it's slow. __This is used for the persistent storage__.
 - So the solution was saving apps on **sgoinfre**, load them during session load to the **volatile** (volatile used to be `~/goinfre`, but we went with `/tmp` instead).
 - We compress and copy the `.junest` dir to "save/load apps".
 - Wrappers to apps (custom script with env and all, called *shims*) are stored in **~/home/bin**.
