@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v0.1.2
+# v0.1.3
 
 set -euo pipefail # :kappa:
 IFS=$'\n\t'
@@ -15,7 +15,9 @@ STATE_DB="${VOLATILE}/june-state.db"
 JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
-JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre")
+YAY_CACHE_DIR_ORIGIN="${HOME}/.cache/yay"
+YAY_CACHE_DIR_DEST="/tmp/june_yay_cache"
+JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre --bind $YAY_CACHE_DIR_ORIGIN $YAY_CACHE_DIR_DEST")
 JUNEST_CMD_SHIM=($JUNEST_VANILLA_CMD ns --backend-args \"--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre\")
 YAY_CMD="yay"
 COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
@@ -44,7 +46,7 @@ fi
 export JUNEST_HOME="$JUNEST_ROOT"
 
 # Create dirs if needed
-mkdir -p "$SHIMS_DIR" "$PERSISTENT" "$VOLATILE"
+mkdir -p "$SHIMS_DIR" "$PERSISTENT" "$VOLATILE" "$YAY_CACHE_DIR_ORIGIN" "$YAY_CACHE_DIR_DEST"
 
 # --- Helpers ---
 log() {
