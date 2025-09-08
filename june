@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# v0.1.3
+# v0.1.4
 
-set -euo pipefail # :kappa:
+set -euo pipefail
 IFS=$'\n\t'
 
-# --- Configuration ---
+# Common directories
 PERSISTENT="${HOME}/sgoinfre"
 VOLATILE="/tmp"
+YAY_CACHE_DIR_ORIGIN="${HOME}/.cache/yay"
+YAY_CACHE_DIR_DEST="/tmp/june_yay_cache"
+# Junest paths
 JUNEST_ROOT="${VOLATILE}/junest-root"
 JUNEST_ARCHIVE="${PERSISTENT}/junest-root.tar.zst"
 JUNEST_LOCK="${PERSISTENT}/.junest.lock"
@@ -14,14 +17,41 @@ SHIMS_DIR="${HOME}/bin"
 STATE_DB="${VOLATILE}/june-state.db"
 JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
-JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
-YAY_CACHE_DIR_ORIGIN="${HOME}/.cache/yay"
-YAY_CACHE_DIR_DEST="/tmp/june_yay_cache"
-JUNEST_CMD=($JUNEST_VANILLA_CMD ns --backend-args "--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre --bind $YAY_CACHE_DIR_ORIGIN $YAY_CACHE_DIR_DEST")
-JUNEST_CMD_SHIM=($JUNEST_VANILLA_CMD ns --backend-args \"--bind /sgoinfre /sgoinfre --bind /goinfre /goinfre\")
+# Common commands
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T$(($(nproc) / 2)) --adapt)
+COMPRESS_CMD=(zstd -T$(($(nproc) * 3/4)) --adapt) # 3/4 of the proc in adapt mode
 DECOMPRESS_CMD=(zstd -d)
+JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
+
+# Helper functions
+make_bind() {
+    local src="$1" dst="$2"
+    echo "--bind ${src} ${dst}"
+}
+make_env() {
+    local var="$1" val="$2"
+    echo "--setenv ${var} ${val}"
+}
+
+COMMON_BINDS=(
+    $(make_bind /sgoinfre /sgoinfre)
+    $(make_bind /goinfre /goinfre)
+)
+NORMAL_BINDS=(
+    "${COMMON_BINDS[@]}"
+    $(make_bind "${YAY_CACHE_DIR_ORIGIN}" "${YAY_CACHE_DIR_DEST}")
+)
+SHIM_BINDS=(
+    "${COMMON_BINDS[@]}"
+    $(make_bind ~/.config/spotify-player ~/.config/spotify-player)
+)
+NORMAL_ENV=(
+    $(make_env OPENSSL_DIR /usr)
+    $(make_env OPENSSL_LIB_DIR /usr/lib)
+    $(make_env OPENSSL_INCLUDE_DIR /usr/include)
+)
+JUNEST_CMD=(${JUNEST_VANILLA_CMD} ns --backend-args "${NORMAL_BINDS[*]} ${NORMAL_ENV[*]}")
+JUNEST_CMD_SHIM=(${JUNEST_VANILLA_CMD} ns --backend-args \"${SHIM_BINDS[*]}\")
 
 # Check if stdout is a terminal for color output
 if [[ -t 1 ]]; then
@@ -83,10 +113,8 @@ show_help() {
     printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent)\n"
     printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
     printf "${YELLOW}Commands (debug):${NC}\n"
-    printf "  ${BLUE}junest-log${NC}      Log into junest.${NC}\n"
-    printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
     printf "  ${BLUE}junest ${GRAY}[args]${NC}   Launches the Junest binary.${NC}\n"
-    printf "                  ${YELLOW}Use if you know what you're doing/if you're debugging only.${NC}\n"
+    printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
     printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
     printf "${YELLOW}Global options:${NC}\n"
     printf "  ${BLUE}-h, --help${NC}      Show this help message\n\n"
@@ -137,7 +165,7 @@ sync_to_sgoinfre() {
     local temp_archive="${JUNEST_ARCHIVE}.tmp"
 
     if ! command -v pv >/dev/null 2>&1; then
-        if ! tar -cf - -C "$VOLATILE" junest-root | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+        if ! tar -cf - -C "$VOLATILE" junest-root --exclude var/cache | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
             return 1
@@ -145,7 +173,7 @@ sync_to_sgoinfre() {
     else
         local dir_size
         dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
-        if ! tar -cf - -C "$VOLATILE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
+        if ! tar -cf - -C "$VOLATILE" junest-root --exclude var/cache | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
             err "Failed to compress junest environment"
             rm -f "$temp_archive"
             return 1
@@ -707,7 +735,6 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
     return 0
 fi
 
-# Check for global --help flag first
 if [[ $# -gt 0 && ("$1" == "--help" || "$1" == "-h") ]]; then
     show_help
     exit 0
@@ -742,10 +769,8 @@ case "$1" in
         cmd_clean_june ;;
     doctor)
         cmd_doctor ;;
-    junest-log)
-        "${JUNEST_CMD[@]}" ;;
     junest)
-        "$JUNEST_VANILLA_CMD" "${@:2}" ;;
+        "${JUNEST_CMD[@]}" "${@:2}" ;;
     *)
         err "unknown command: $1"
         err "Use 'june --help' for usage information"
