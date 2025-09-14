@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# v0.1.5
 
 set -euo pipefail
 IFS=$'\n\t'
 
+# **************************************************************************** #
+#                                Common consts                                 #
+# **************************************************************************** #
+VERSION="0.2.0"
 # Common directories
 PERSISTENT="${HOME}/sgoinfre"
 VOLATILE="/tmp"
@@ -19,759 +22,1136 @@ JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 # Common commands
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T$(($(nproc) * 3/4)) --adapt) # 3/4 of the proc in adapt mode
+COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt)
+# 3/4 of the proc in adapt mode
 DECOMPRESS_CMD=(zstd -d)
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
+export JUNEST_HOME="$JUNEST_ROOT" # for junest to find the forrect path
+# Global flags
+GLOBAL_VERBOSE=false
+GLOBAL_QUIET=false
 
-# Helper functions
+# **************************************************************************** #
+#                               Helper functions                               #
+# **************************************************************************** #
+log() {
+  if [[ "$GLOBAL_QUIET" == "true" ]]; then
+    return
+  fi
+
+  if [[ "$1" == "--startup" ]]; then
+    shift
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$msg" | tee -a "$LOG_FILE"
+  else
+    printf "${BLUE}[june]${NC} %s\n" "$*"
+  fi
+}
+
+verbose_log() {
+  if [[ "$GLOBAL_VERBOSE" == "true" ]]; then
+    log "$@"
+  fi
+}
+
+err() {
+  if [[ "$1" == "--startup" ]]; then
+    shift
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
+    echo "$msg" >&2 | tee -a "$LOG_FILE"
+  else
+    printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2
+  fi
+}
+
+# **************************************************************************** #
+#                              Directory binding                               #
+# **************************************************************************** #
 make_bind() {
-    local src="$1" dst="$2"
-    echo "--bind ${src} ${dst}"
+  local src="$1" dst="$2"
+  echo "--bind ${src} ${dst}"
 }
 make_env() {
-    local var="$1" val="$2"
-    echo "--setenv ${var} ${val}"
+  local var="$1" val="$2"
+  echo "--setenv ${var} ${val}"
 }
-
 COMMON_BINDS=(
-    $(make_bind /sgoinfre /sgoinfre)
-    $(make_bind /goinfre /goinfre)
+  $(make_bind /sgoinfre /sgoinfre)
+  $(make_bind /goinfre /goinfre)
 )
 NORMAL_BINDS=(
-    "${COMMON_BINDS[@]}"
-    $(make_bind "${YAY_CACHE_DIR_ORIGIN}" "${YAY_CACHE_DIR_DEST}")
+  "${COMMON_BINDS[@]}"
+  $(make_bind "${YAY_CACHE_DIR_ORIGIN}" "${YAY_CACHE_DIR_DEST}")
 )
 SHIM_BINDS=(
-    "${COMMON_BINDS[@]}"
+  "${COMMON_BINDS[@]}"
 )
 NORMAL_ENV=(
-    $(make_env OPENSSL_DIR /usr)
-    $(make_env OPENSSL_LIB_DIR /usr/lib)
-    $(make_env OPENSSL_INCLUDE_DIR /usr/include)
+  $(make_env OPENSSL_DIR /usr)
+  $(make_env OPENSSL_LIB_DIR /usr/lib)
+  $(make_env OPENSSL_INCLUDE_DIR /usr/include)
 )
 JUNEST_CMD=(${JUNEST_VANILLA_CMD} ns --backend-args "${NORMAL_BINDS[*]} ${NORMAL_ENV[*]}")
 JUNEST_CMD_SHIM=(${JUNEST_VANILLA_CMD} ns --backend-args \"${SHIM_BINDS[*]}\")
 
-# Check if stdout is a terminal for color output
+# **************************************************************************** #
+#                                    Color                                     #
+# **************************************************************************** #
 if [[ -t 1 ]]; then
-    USE_COLORS=1
-    RED=$(tput setaf 1)
-    GREEN=$(tput setaf 2)
-    YELLOW=$(tput setaf 3)
-    BLUE=$(tput setaf 4)
-    GRAY=$(tput setaf 8)
-    NC=$(tput sgr0)
+  USE_COLORS=1
+  RED=$(tput setaf 1)
+  GREEN=$(tput setaf 2)
+  YELLOW=$(tput setaf 3)
+  BLUE=$(tput setaf 4)
+  GRAY=$(tput setaf 8)
+  NC=$(tput sgr0)
 else
-    USE_COLORS=0
-    RED=''
-    GREEN=''
-    YELLOW=''
-    BLUE=''
-    GRAY=''
-    NC=''
+  USE_COLORS=0
+  RED=''
+  GREEN=''
+  YELLOW=''
+  BLUE=''
+  GRAY=''
+  NC=''
 fi
 
-# Set JUNEST_HOME environment variable
-export JUNEST_HOME="$JUNEST_ROOT"
-
 # Create dirs if needed
+# Those dirs are needed for the rest of the app to work and we should be able
+# to safely create them.
 mkdir -p "$SHIMS_DIR" "$PERSISTENT" "$VOLATILE" "$YAY_CACHE_DIR_ORIGIN" "$YAY_CACHE_DIR_DEST"
 
-# --- Helpers ---
-log() {
-    if [[ "$1" == "--startup" ]]; then
-        shift
-        local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
-        echo "$msg" | tee -a "$LOG_FILE"
-    else
-        printf "${BLUE}[june]${NC} %s\n" "$*"
+# **************************************************************************** #
+#                                Flags parsing                                 #
+# **************************************************************************** #
+parse_global_flags() {
+  local -n args_ref=$1
+  local -a filtered_args=()
+  local i=0
+
+  while [[ $i -lt ${#args_ref[@]} ]]; do
+    case "${args_ref[$i]}" in
+    -h | --help | help)
+      show_help
+      exit 0
+      ;;
+    -v | --version | v | version)
+      show_version
+      exit 0
+      ;;
+    --verbose)
+      GLOBAL_VERBOSE=true
+      ;;
+    -q | --quiet)
+      GLOBAL_QUIET=true
+      ;;
+    *)
+      filtered_args+=("${args_ref[$i]}")
+      ;;
+    esac
+    ((i++)) || true
+  done
+
+  args_ref=("${filtered_args[@]}") # replace original array with filtered args
+}
+
+parse_command_flags() {
+  local command="$1"
+  shift
+  local -a cmd_args=()
+  local -a cmd_flags=()
+
+  case "$command" in
+  install)
+    parse_install_flags "$@"
+    ;;
+  list | ls)
+    parse_list_flags "$@"
+    ;;
+  search | find)
+    parse_search_flags "$@"
+    ;;
+  remove | uninstall)
+    parse_remove_flags "$@"
+    ;;
+  update | upgrade)
+    parse_update_flags "$@"
+    ;;
+  *)
+    # For commands without specific flags, return all args as command args
+    CMD_ARGS=("$@")
+    CMD_FLAGS=()
+    ;;
+  esac
+}
+
+parse_install_flags() {
+  CMD_ARGS=()
+  CMD_FLAGS=()
+  local skip_sync=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --no-sync)
+      CMD_FLAGS+=(--no-sync)
+      skip_sync=true
+      shift
+      ;;
+    --aur-only)
+      CMD_FLAGS+=(--aur-only)
+      shift
+      ;;
+    -*)
+      err "Unknown install flag: $1"
+      return 1
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+    esac
+  done
+}
+
+parse_list_flags() {
+  CMD_ARGS=()
+  CMD_FLAGS=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --all | -a)
+      CMD_FLAGS+=(--all)
+      shift
+      ;;
+    --user | -u)
+      CMD_FLAGS+=(--user)
+      shift
+      ;;
+    -*)
+      err "Unknown list flag: $1"
+      return 1
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+    esac
+  done
+}
+
+parse_search_flags() {
+  CMD_ARGS=()
+  CMD_FLAGS=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --aur-only)
+      CMD_FLAGS+=(--aur-only)
+      shift
+      ;;
+    --repo-only)
+      CMD_FLAGS+=(--repo-only)
+      shift
+      ;;
+    -*)
+      err "Unknown search flag: $1"
+      return 1
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+    esac
+  done
+}
+
+parse_remove_flags() {
+  CMD_ARGS=()
+  CMD_FLAGS=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --no-sync)
+      CMD_FLAGS+=(--no-sync)
+      shift
+      ;;
+    --cascade)
+      CMD_FLAGS+=(--cascade)
+      shift
+      ;;
+    -*)
+      err "Unknown remove flag: $1"
+      return 1
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+    esac
+  done
+}
+
+parse_update_flags() {
+  CMD_ARGS=()
+  CMD_FLAGS=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --no-sync)
+      CMD_FLAGS+=(--no-sync)
+      shift
+      ;;
+    --devel)
+      CMD_FLAGS+=(--devel)
+      shift
+      ;;
+    -*)
+      err "Unknown update flag: $1"
+      return 1
+      ;;
+    *)
+      CMD_ARGS+=("$1")
+      shift
+      ;;
+    esac
+  done
+}
+
+has_flag() {
+  local flag="$1"
+  shift
+  local flags=("$@")
+
+  for f in "${flags[@]}"; do
+    if [[ "$f" == "$flag" ]]; then
+      return 0
     fi
+  done
+  return 1
 }
 
-err() {
-    if [[ "$1" == "--startup" ]]; then
-        shift
-        local msg="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
-        echo "$msg" >&2 | tee -a "$LOG_FILE"
-    else
-        printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2
-    fi
-}
-
-show_help() {
-    printf "${BLUE}Usage:${NC} june [--help] <command> [args]\n\n"
-    printf "${YELLOW}Commands (packages):${NC}\n"
-    printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to persistent storage)\n"
-    printf "  ${BLUE}remove ${GREEN}<pkgs>${NC}   Remove package(s)\n"
-    printf "  ${BLUE}list${NC}            List user-installed packages\n"
-    printf "  ${BLUE}list --all${NC}      List all installed packages\n"
-    printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
-    printf "  ${BLUE}update${NC}          Update all packages\n\n"
-    printf "${YELLOW}Commands (image):${NC}\n"
-    printf "  ${BLUE}sync${NC}            Syncs volatile → persistent\n"
-    printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent)\n"
-    printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
-    printf "${YELLOW}Commands (debug):${NC}\n"
-    printf "  ${BLUE}junest ${GRAY}[args]${NC}   Launches the Junest binary.${NC}\n"
-    printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
-    printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
-    printf "${YELLOW}Global options:${NC}\n"
-    printf "  ${BLUE}-h, --help${NC}      Show this help message\n\n"
-    printf "${YELLOW}Examples:${NC}\n"
-    printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
-    printf "  june ${BLUE}install ${GREEN}code-bin${NC}        ${GRAY}# Install VS Code${NC}\n"
-    printf "  june ${BLUE}search ${GREEN}python${NC}           ${GRAY}# Search for python packages${NC}\n"
-    printf "  june ${BLUE}list${NC}                    ${GRAY}# Show user-installed packages${NC}\n"
-    printf "  june ${BLUE}list --all${NC}              ${GRAY}# Show all installed packages${NC}\n"
-    printf "  june ${BLUE}startup${NC}                 ${GRAY}# Initialize/sync environment${NC}\n"
-    printf "  june ${BLUE}doctor${NC}                  ${GRAY}# Check environment health${NC}\n\n"
-    printf "${YELLOW}Notes:${NC} Avoid '-git' variants to not build from source.\n"
-    printf "       Changes are automatically synced to persistent storage after operations.\n"
-    printf "       Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
-}
-
+# **************************************************************************** #
+#                                Lock functions                                #
+# **************************************************************************** #
 cleanup_lock() {
-    rm "$JUNEST_LOCK" 2>/dev/null && log "June lock freed" || true
+  rm "$JUNEST_LOCK" 2>/dev/null && log "June lock freed" || true
 }
 
 acquire_lock() {
-    local max_wait=60
-    local waited=0
+  local max_wait=60
+  local waited=0
 
-    while [[ -f "$JUNEST_LOCK" ]] && (( waited < max_wait )); do
-        log "Waiting for another june operation to complete..."
-        sleep 2
-        ((waited += 2))
-    done
+  while [[ -f "$JUNEST_LOCK" ]] && ((waited < max_wait)); do
+    log "Waiting for another june operation to complete..."
+    sleep 2
+    ((waited += 2))
+  done
 
-    if [[ -f "$JUNEST_LOCK" ]]; then
-        log "Lock timeout - removing stale lock"
-        rm -f "$JUNEST_LOCK"
-    fi
+  if [[ -f "$JUNEST_LOCK" ]]; then
+    log "Lock timeout - removing stale lock"
+    rm -f "$JUNEST_LOCK"
+  fi
 
-    log "June lock taken"
-    log "$$" > "$JUNEST_LOCK"
-    trap cleanup_lock EXIT
+  verbose_log "June lock taken"
+  log "$$" >"$JUNEST_LOCK"
+  trap cleanup_lock EXIT
 }
 
-sync_to_sgoinfre() {
-    if [[ ! -d "$JUNEST_ROOT" ]]; then
-        err "No local junest environment to sync"
-        return 1
-    fi
-
-    log "Syncing junest environment to ${YELLOW}persistent storage${NC}..."
-    local temp_archive="${JUNEST_ARCHIVE}.tmp"
-
-    if ! command -v pv >/dev/null 2>&1; then
-        if ! tar -cf - -C "$VOLATILE" junest-root --exclude var/cache | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
-            err "Failed to compress junest environment"
-            rm -f "$temp_archive"
-            return 1
-        fi
-    else
-        local dir_size
-        dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
-        if ! tar -cf - -C "$VOLATILE" junest-root --exclude var/cache | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" > "$temp_archive"; then
-            err "Failed to compress junest environment"
-            rm -f "$temp_archive"
-            return 1
-        fi
-    fi
-
-    mv "$temp_archive" "$JUNEST_ARCHIVE" || {
-        err "Could not move archive"
-        return 1;
-    }
-
-    if [[ -f "$STATE_DB" ]]; then
-        cp "$STATE_DB" "${PERSISTENT}/june-state.db"
-    fi
-
-    local size=$(du -h "$JUNEST_ARCHIVE" | cut -f1)
-    log "Junest environment saved to ${YELLOW}persistent storage${NC} (compressed: $size)"
-}
-
+# **************************************************************************** #
+#                               Junest functions                               #
+# **************************************************************************** #
 ensure_junest() {
-    if [[ -z $JUNEST_CMD[0] ]]; then
-        err "junest not found in PATH. Install junest first."
-        err "Run: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
-        return 1
-    fi
+  if [[ -z $JUNEST_CMD[0] ]]; then
+    err "junest not found in PATH. Install junest first."
+    err "Run: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+    return 1
+  fi
 
-    if [[ ! -d "$JUNEST_ROOT" ]]; then
-        err "Junest environment not initialized. Run 'june startup' first."
-        return 1
-    fi
+  if [[ ! -d "$JUNEST_ROOT" ]]; then
+    err "Junest environment not initialized. Run 'june startup' first."
+    return 1
+  fi
 
-    export JUNEST_HOME="$JUNEST_ROOT"
+  export JUNEST_HOME="$JUNEST_ROOT"
 }
 
+init_junest() {
+  log --startup "Initializing new junest environment..."
+
+  # Check if junest is available
+  if ! command -v junest &>/dev/null; then
+    err --startup "junest not found in PATH - please install junest first"
+    err --startup "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+    return 1
+  fi
+
+  export JUNEST_HOME="$JUNEST_ROOT"
+
+  # Remove any existing incomplete setup
+  if [[ -d "$JUNEST_ROOT" ]]; then
+    log --startup "Cleaning incomplete junest setup..."
+    rm -rf "$JUNEST_ROOT"
+  fi
+
+  # Initialize junest in the correct location
+  if ! junest setup; then
+    err --startup "Failed to initialize junest"
+    return 1
+  fi
+
+  # Update Junest env to avoid errors later
+  log --startup "Updating junest env"
+  junest -- bash -c "
+        yay -Syy --noconfirm &&
+        yay -Syu --noconfirm &&
+        yay -S --noconfirm --needed base-devel git
+    " || log --startup "Note: junest env installation failed"
+
+  log --startup "Junest initialized - saving to persistent storage..."
+  sync_to_sgoinfre
+}
+
+# **************************************************************************** #
+#                                Shim functions                                #
+# **************************************************************************** #
 create_shim() {
-    local target_path="$1"
-    local name="$2"
-    local shim_file="${SHIMS_DIR}/${name}"
-    cat > "$shim_file" <<EOF
+  local target_path="$1"
+  local name="$2"
+  local shim_file="${SHIMS_DIR}/${name}"
+  cat >"$shim_file" <<EOF
 #!/usr/bin/env bash
 #june-shim
 # Auto-generated by june
 export JUNEST_HOME="${JUNEST_ROOT}"
 exec ${JUNEST_CMD_SHIM[@]} -- "${target_path}" "\$@"
 EOF
-    chmod +x "$shim_file"
-    log "Shim created: ${GREEN}$shim_file${NC} -> $target_path"
-}
-
-record_package() {
-    local pkg="$1"
-    local timestamp=$(date +%s)
-    echo "${pkg}|${timestamp}|installed" >> "$STATE_DB"
-}
-
-# --- Startup Functions ---
-ensure_dirs() {
-    mkdir -p "$PERSISTENT" "$VOLATILE" "$SHIMS_DIR"
-
-    # Check if persistent storage is accessible
-    if ! touch "${PERSISTENT}/.test" 2>/dev/null; then
-        err --startup "persistent storage not accessible at ${PERSISTENT}"
-        return 1
-    fi
-    rm -f "${PERSISTENT}/.test"
-}
-
-sync_from_sgoinfre() {
-    if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
-        log --startup "No junest archive found in persistent storage - will create fresh environment"
-        return 1
-    fi
-
-    log --startup "Found junest archive in persistent storage ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
-
-    # Check if local junest already exists and is up-to-date
-    if [[ -d "$JUNEST_ROOT" ]]; then
-        local archive_time=$(stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null)
-        local local_marker="${JUNEST_ROOT}/.june-sync-time"
-
-        if [[ -f "$local_marker" ]]; then
-            local local_time=$(cat "$local_marker")
-            if [[ "$archive_time" == "$local_time" ]]; then
-                log --startup "Local junest environment is up-to-date, skipping sync"
-                return 0
-            fi
-        fi
-
-        log --startup "Local junest environment outdated, updating..."
-        rm -rf "$JUNEST_ROOT"
-    fi
-
-    log --startup "Decompressing junest archive to volatile..."
-    mkdir -p "$JUNEST_ROOT"
-
-    if ! command -v pv >/dev/null 2>&1; then
-        if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
-            err --startup "Failed to decompress junest archive"
-            rm -rf "$JUNEST_ROOT"
-            return 1
-        fi
-    else
-        local archive_size
-        archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
-        if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
-            err --startup "Failed to get archive size, falling back to decompression without progress bar"
-            if ! "${DECOMPRESS_CMD[@]}" < "$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
-                err --startup "Failed to decompress junest archive"
-                rm -rf "$JUNEST_ROOT"
-                return 1
-            fi
-        else
-            log --startup "Archive size: $archive_size bytes"
-            if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$VOLATILE"; then
-                err --startup "Failed to decompress junest archive"
-                rm -rf "$JUNEST_ROOT"
-                return 1
-            fi
-        fi
-    fi
-
-    # Mark sync time
-    stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null > "${JUNEST_ROOT}/.june-sync-time"
-
-    if [[ -f "$JUNE_STATE" ]]; then
-        cp "$JUNE_STATE" "$STATE_DB"
-    fi
-
-    log --startup "Junest environment synced successfully"
-    return 0
-}
-
-init_junest() {
-    log --startup "Initializing new junest environment..."
-
-    # Check if junest is available
-    if ! command -v junest &>/dev/null; then
-        err --startup "junest not found in PATH - please install junest first"
-        err --startup "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
-        return 1
-    fi
-
-    export JUNEST_HOME="$JUNEST_ROOT"
-
-    # Remove any existing incomplete setup
-    if [[ -d "$JUNEST_ROOT" ]]; then
-        log --startup "Cleaning incomplete junest setup..."
-        rm -rf "$JUNEST_ROOT"
-    fi
-
-    # Initialize junest in the correct location
-    if ! junest setup; then
-        err --startup "Failed to initialize junest"
-        return 1
-    fi
-
-    # Update Junest env to avoid errors later
-    log --startup "Updating junest env"
-    junest -- bash -c "
-        yay -Syy --noconfirm &&
-        yay -Syu --noconfirm &&
-        yay -S --noconfirm --needed base-devel git
-    " || log --startup "Note: junest env installation failed"
-
-    log --startup "Junest initialized - saving to persistent storage..."
-    sync_to_sgoinfre
+  chmod +x "$shim_file"
+  verbose_log "Shim created: ${GREEN}$shim_file${NC} -> $target_path"
 }
 
 verify_shims() {
-    if [[ ! -d "$SHIMS_DIR" ]]; then
-        return
-    fi
+  if [[ ! -d "$SHIMS_DIR" ]]; then
+    return
+  fi
 
-    local shim_count=0
-    for shim in "$SHIMS_DIR"/*; do
-        if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
-            # Update JUNEST_HOME in shim if needed
-            sed -i "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null || \
-            sed -i '' "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
-            ((shim_count++))
-        fi
-    done
-
-    if (( shim_count > 0 )); then
-        log --startup "Verified $shim_count june shims"
+  local shim_count=0
+  for shim in "$SHIMS_DIR"/*; do
+    if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+      # Update JUNEST_HOME in shim if needed
+      sed -i "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null ||
+        sed -i '' "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
+      ((shim_count++))
     fi
+  done
+
+  if ((shim_count > 0)); then
+    log --startup "Verified $shim_count june shims"
+  fi
 }
 
-# --- Commands ---
-cmd_install() {
-    local pkgs=("$@")
-    ensure_junest || return 1
-    acquire_lock
+# **************************************************************************** #
+#                         Directories/files functions                          #
+# **************************************************************************** #
+record_package() {
+  local pkg="$1"
+  local timestamp=$(date +%s)
+  echo "${pkg}|${timestamp}|installed" >>"$STATE_DB"
+}
 
-    # Pretty packages display
-    for e in "${pkgs[@]}"; do
-        out+="${GREEN}${e}${NC}, "
-    done
-    formatted="${out%, }"
+ensure_dirs() {
+  mkdir -p "$PERSISTENT" "$VOLATILE" "$SHIMS_DIR"
 
-    log "Installing ${GREEN}$formatted${NC} inside junest via yay/pacman..."
-    log "Note: avoid '-git' variants to not build from source."
+  # Check if persistent storage is accessible
+  if ! touch "${PERSISTENT}/.test" 2>/dev/null; then
+    err --startup "persistent storage not accessible at ${PERSISTENT}"
+    return 1
+  fi
+  rm -f "${PERSISTENT}/.test"
+}
 
-    if [[ -n "$YAY_CMD" ]]; then
-        "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -S --noconfirm "${pkgs[@]}" || {
-            cleanup_lock
-            err "install failed"
-            return 1
-        }
-    else
-        "${JUNEST_CMD[@]}" -- pacman -S --noconfirm "${pkgs[@]}" || {
-            cleanup_lock
-            err "install failed"
-            return 1
-        }
+sync_to_sgoinfre() {
+  if [[ ! -d "$JUNEST_ROOT" ]]; then
+    err "No local junest environment to sync"
+    return 1
+  fi
+
+  log "Syncing junest environment to ${YELLOW}persistent storage${NC}..."
+  local temp_archive="${JUNEST_ARCHIVE}.tmp"
+
+  if ! command -v pv >/dev/null 2>&1; then
+    if ! tar -cf - --exclude="var/cache" -C "$VOLATILE" junest-root | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
+      err "Failed to compress junest environment"
+      rm -f "$temp_archive"
+      return 1
+    fi
+  else
+    local dir_size
+    dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
+    if ! tar -cf - --exclude="var/cache" -C "$VOLATILE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
+      err "Failed to compress junest environment"
+      rm -f "$temp_archive"
+      return 1
+    fi
+  fi
+
+  mv "$temp_archive" "$JUNEST_ARCHIVE" || {
+    err "Could not move archive"
+    return 1
+  }
+
+  if [[ -f "$STATE_DB" ]]; then
+    cp "$STATE_DB" "${PERSISTENT}/june-state.db"
+  fi
+
+  local size=$(du -h "$JUNEST_ARCHIVE" | cut -f1)
+  log "Junest environment saved to ${YELLOW}persistent storage${NC} (compressed: $size)"
+}
+
+# **************************************************************************** #
+#                          Synchronization functions                           #
+# **************************************************************************** #
+sync_from_sgoinfre() {
+  if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
+    log --startup "No junest archive found in persistent storage - will create fresh environment"
+    return 1
+  fi
+
+  log --startup "Found junest archive in persistent storage ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
+
+  # Check if local junest already exists and is up-to-date
+  if [[ -d "$JUNEST_ROOT" ]]; then
+    local archive_time=$(stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null)
+    local local_marker="${JUNEST_ROOT}/.june-sync-time"
+
+    if [[ -f "$local_marker" ]]; then
+      local local_time=$(cat "$local_marker")
+      if [[ "$archive_time" == "$local_time" ]]; then
+        log --startup "Local junest environment is up-to-date, skipping sync"
+        return 0
+      fi
     fi
 
-    log "Install finished. Generating shims..."
-    for pkg in "${pkgs[@]}"; do
-        local bins
-        bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
+    log --startup "Local junest environment outdated, updating..."
+    rm -rf "$JUNEST_ROOT"
+  fi
 
-        if [[ -z "$bins" ]]; then
-            log "No executables found in package"
-        else
-            while IFS= read -r bin_path; do
-                if [[ -n "$bin_path" ]]; then
-                    local bin_name=$(basename "$bin_path")
-                    create_shim "$bin_path" "$bin_name"
-                fi
-            done <<< "$bins"
+  log --startup "Decompressing junest archive to volatile..."
+  mkdir -p "$JUNEST_ROOT"
+
+  if ! command -v pv >/dev/null 2>&1; then
+    if ! "${DECOMPRESS_CMD[@]}" <"$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
+      err --startup "Failed to decompress junest archive"
+      rm -rf "$JUNEST_ROOT"
+      return 1
+    fi
+  else
+    local archive_size
+    archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
+    if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
+      err --startup "Failed to get archive size, falling back to decompression without progress bar"
+      if ! "${DECOMPRESS_CMD[@]}" <"$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
+        err --startup "Failed to decompress junest archive"
+        rm -rf "$JUNEST_ROOT"
+        return 1
+      fi
+    else
+      log --startup "Archive size: $archive_size bytes"
+      if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$VOLATILE"; then
+        err --startup "Failed to decompress junest archive"
+        rm -rf "$JUNEST_ROOT"
+        return 1
+      fi
+    fi
+  fi
+
+  # Mark sync time
+  stat -c %Y "$JUNEST_ARCHIVE" 2>/dev/null || stat -f %m "$JUNEST_ARCHIVE" 2>/dev/null >"${JUNEST_ROOT}/.june-sync-time"
+
+  if [[ -f "$JUNE_STATE" ]]; then
+    cp "$JUNE_STATE" "$STATE_DB"
+  fi
+
+  log --startup "Junest environment synced successfully"
+  return 0
+}
+
+# **************************************************************************** #
+#                             Subcommand functions                             #
+# **************************************************************************** #
+show_version() {
+  printf "${BLUE}june${NC} version ${GREEN}${VERSION}${NC}\n"
+  printf "A junest package manager wrapper\n"
+  printf "Repository: https://github.com/airone01/june\n"
+}
+
+show_help() {
+  printf "${BLUE}Usage:${NC} june [global-options] <command> [command-options] [args]\n\n"
+
+  printf "${YELLOW}Global Options:${NC}\n"
+  printf "  ${BLUE}-h, --help${NC}      Show this help message\n"
+  printf "  ${BLUE}-v, --version${NC}   Show version information\n"
+  printf "  ${BLUE}--verbose${NC}       Enable verbose output\n"
+  printf "  ${BLUE}-q, --quiet${NC}     Suppress non-error output\n\n"
+
+  printf "${YELLOW}Commands (packages):${NC}\n"
+  printf "  ${BLUE}install ${GREEN}<pkgs>${NC}  Install package(s) (auto-syncs to persistent storage)\n"
+  printf "    ${GRAY}Options: --no-sync, --aur-only${NC}\n"
+  printf "  ${BLUE}remove ${GREEN}<pkgs>${NC}   Remove package(s)\n"
+  printf "    ${GRAY}Options: --no-sync, --cascade${NC}\n"
+  printf "  ${BLUE}list${NC}            List user-installed packages\n"
+  printf "    ${GRAY}Options: --all (-a), --user (-u)${NC}\n"
+  printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
+  printf "    ${GRAY}Options: --aur-only, --repo-only${NC}\n"
+  printf "  ${BLUE}update${NC}          Update all packages\n"
+  printf "    ${GRAY}Options: --no-sync, --devel${NC}\n\n"
+
+  printf "${YELLOW}Commands (image):${NC}\n"
+  printf "  ${BLUE}sync${NC}            Syncs volatile → persistent\n"
+  printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent)\n"
+  printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
+
+  printf "${YELLOW}Commands (debug):${NC}\n"
+  printf "  ${BLUE}junest ${GRAY}[args]${NC}   Launches the Junest binary.${NC}\n"
+  printf "                  ${YELLOW}Use if you know what you're doing only.${NC}\n"
+  printf "  ${BLUE}doctor${NC}          Debug june environment setup/health\n\n"
+
+  printf "${YELLOW}Examples:${NC}\n"
+  printf "  june ${BLUE}install ${GREEN}neovim-bin${NC}      ${GRAY}# Install neovim (binary version)${NC}\n"
+  printf "  june ${BLUE}install ${GREEN}code-bin --no-sync${NC} ${GRAY}# Install VS Code without syncing${NC}\n"
+  printf "  june ${BLUE}search ${GREEN}python --aur-only${NC}   ${GRAY}# Search for python packages in AUR only${NC}\n"
+  printf "  june ${BLUE}list --all${NC}              ${GRAY}# Show all installed packages${NC}\n"
+  printf "  june ${BLUE}--verbose startup${NC}       ${GRAY}# Initialize with verbose output${NC}\n"
+  printf "  june ${BLUE}update --devel${NC}          ${GRAY}# Update including development packages${NC}\n\n"
+
+  printf "${YELLOW}Notes:${NC} Avoid '-git' variants to not build from source.\n"
+  printf "       Changes are automatically synced to persistent storage after operations.\n"
+  printf "       Global flags can be used anywhere in the command line.\n"
+  printf "       Errors/questions? Contact me, ${GREEN}@airone01 ${NC}on Discord.\n"
+}
+
+# **************************************************************************** #
+#                                 Subcommands                                  #
+# **************************************************************************** #
+cmd_install() {
+  local pkgs=("${CMD_ARGS[@]}")
+  local flags=("${CMD_FLAGS[@]}")
+
+  if [[ ${#pkgs[@]} -eq 0 ]]; then
+    err "install requires at least one package name"
+    return 1
+  fi
+
+  ensure_junest || return 1
+  acquire_lock
+
+  # Pretty packages display
+  local out=""
+  for e in "${pkgs[@]}"; do
+    out+="${GREEN}${e}${NC}, "
+  done
+  local formatted="${out%, }"
+
+  log "Installing ${GREEN}$formatted${NC} inside junest via yay/pacman..."
+  log "Note: avoid '-git' variants to not build from source."
+
+  # Build yay command with flags
+  local yay_args=("--color=auto" "-S" "--noconfirm")
+
+  if has_flag "--aur-only" "${flags[@]}"; then
+    yay_args+=("--aur")
+    verbose_log "Using AUR-only mode"
+  fi
+
+  if [[ -n "$YAY_CMD" ]]; then
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} "${yay_args[@]}" "${pkgs[@]}" || {
+      cleanup_lock
+      err "install failed"
+      return 1
+    }
+  else
+    "${JUNEST_CMD[@]}" -- pacman -S --noconfirm "${pkgs[@]}" || {
+      cleanup_lock
+      err "install failed"
+      return 1
+    }
+  fi
+
+  log "Install finished. Generating shims..."
+  for pkg in "${pkgs[@]}"; do
+    local bins
+    bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
+
+    if [[ -z "$bins" ]]; then
+      verbose_log "No executables found in package $pkg"
+    else
+      while IFS= read -r bin_path; do
+        if [[ -n "$bin_path" ]]; then
+          local bin_name=$(basename "$bin_path")
+          create_shim "$bin_path" "$bin_name"
         fi
+      done <<<"$bins"
+    fi
 
-        record_package "$pkg"
-    done
+    record_package "$pkg"
+  done
 
+  if ! has_flag "--no-sync" "${flags[@]}"; then
     sync_to_sgoinfre
+  else
+    verbose_log "Skipping sync due to --no-sync flag"
+  fi
 
-    cleanup_lock
-    log "Package(s) ${GREEN}$formatted${NC} installed and synced successfully!"
+  cleanup_lock
+  log "Package(s) ${GREEN}$formatted${NC} installed successfully!"
 }
 
 cmd_remove() {
-    local pkgs=("$@")
-    ensure_junest || return 1
+  local pkgs=("${CMD_ARGS[@]}")
+  local flags=("${CMD_FLAGS[@]}")
 
-    acquire_lock
+  if [[ ${#pkgs[@]} -eq 0 ]]; then
+    err "remove requires at least one package name"
+    return 1
+  fi
 
-    # Pretty packages display
-    for e in "${pkgs[@]}"; do
-        out+="${GREEN}${e}${NC}, "
-    done
-    formatted="${out%, }"
+  ensure_junest || return 1
+  acquire_lock
 
-    log "Removing ${RED}$formatted${NC} from junest..."
+  # Pretty packages display
+  local out=""
+  for e in "${pkgs[@]}"; do
+    out+="${GREEN}${e}${NC}, "
+  done
+  local formatted="${out%, }"
 
-    for pkg in "${pkgs[@]}"; do
-        local bins
-        bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
+  log "Removing ${RED}$formatted${NC} from junest..."
 
-        while IFS= read -r bin_path; do
-            if [[ -n "$bin_path" ]]; then
-                local bin_name=$(basename "$bin_path")
-                local shim_file="${SHIMS_DIR}/${bin_name}"
-                if [[ -f "$shim_file" ]] && grep -q "#june-shim" "$shim_file" 2>/dev/null; then
-                    rm -f "$shim_file"
-                    log "Removed shim: ${RED}$shim_file${NC}"
-                fi
-            fi
-        done <<< "$bins"
+  for pkg in "${pkgs[@]}"; do
+    local bins
+    bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}')
 
-        echo "${pkg}|$(date +%s)|removed" >> "$STATE_DB"
-    done
+    while IFS= read -r bin_path; do
+      if [[ -n "$bin_path" ]]; then
+        local bin_name=$(basename "$bin_path")
+        local shim_file="${SHIMS_DIR}/${bin_name}"
+        if [[ -f "$shim_file" ]] && grep -q "#june-shim" "$shim_file" 2>/dev/null; then
+          rm -f "$shim_file"
+          verbose_log "Removed shim: ${RED}$shim_file${NC}"
+        fi
+      fi
+    done <<<"$bins"
 
-    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -R --noconfirm "${pkgs[@]}" || {
-        cleanup_lock
-        err "remove failed"
-        return 1
-    }
+    echo "${pkg}|$(date +%s)|removed" >>"$STATE_DB"
+  done
 
-    sync_to_sgoinfre
+  # Build remove command with flags
+  local remove_args=("--color=auto" "-R" "--noconfirm")
 
+  if has_flag "--cascade" "${flags[@]}"; then
+    remove_args+=("-c")
+    verbose_log "Using cascade removal"
+  fi
+
+  "${JUNEST_CMD[@]}" -- ${YAY_CMD} "${remove_args[@]}" "${pkgs[@]}" || {
     cleanup_lock
-    log "Package(s) ${RED}$formatted${NC} removed and changes synced!"
+    err "remove failed"
+    return 1
+  }
+
+  if ! has_flag "--no-sync" "${flags[@]}"; then
+    sync_to_sgoinfre
+  else
+    verbose_log "Skipping sync due to --no-sync flag"
+  fi
+
+  cleanup_lock
+  log "Package(s) ${RED}$formatted${NC} removed successfully!"
 }
 
 cmd_sync() {
-    acquire_lock
-    sync_to_sgoinfre
-    cleanup_lock
+  acquire_lock
+  sync_to_sgoinfre
+  cleanup_lock
 }
 
 cmd_list() {
-    local show_all=false
+  local flags=("${CMD_FLAGS[@]}")
+  local show_all=false
+  local show_user=false
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --all|-a)
-                show_all=true
-                shift
-                ;;
-            *)
-                err "Unknown option: $1"
-                return 1
-                ;;
+  # Process flags
+  if has_flag "--all" "${flags[@]}"; then
+    show_all=true
+  fi
+
+  if has_flag "--user" "${flags[@]}"; then
+    show_user=true
+  fi
+
+  # Default behavior if no flags specified
+  if [[ ${#flags[@]} -eq 0 ]]; then
+    show_user=true
+  fi
+
+  ensure_junest || return 1
+
+  if [[ "$show_all" == "true" ]]; then
+    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q || "${JUNEST_CMD[@]}" -- pacman -Q
+  elif [[ "$show_user" == "true" ]]; then
+    if [[ ! -f "$STATE_DB" ]]; then
+      log "No user-installed packages found (state database not found)"
+      log "Use 'june list --all' to see all packages in junest"
+      return 0
+    fi
+
+    local installed_count=0
+    local removed_count=0
+    local pkgs=()
+
+    # Parse state database and collect packages first
+    while IFS='|' read -r pkg timestamp status; do
+      if [[ -n "$pkg" && -n "$status" ]]; then
+        case "$status" in
+          "installed")
+            pkgs+=("$pkg")
+            ((installed_count++)) || true
+            ;;
+          "removed")
+            ((removed_count++)) || true
+            ;;
         esac
+      fi
+    done < "$STATE_DB" 2>/dev/null
+
+    # Note: This fails when there are packages that have been marked as removed
+    # Note: This also is not optimal bc it's a loop where we could be leveraging]
+    # multiple args in the yay command but welp.
+    for pkg in "$(printf '%s\n' "${pkgs[@]}" | sort -u)"; do
+      "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q $pkg || "${JUNEST_CMD[@]}" -- pacman -Q $pkg
     done
 
-    ensure_junest || return 1
-
-    if [[ "$show_all" == "true" ]]; then
-        "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q || "${JUNEST_CMD[@]}" -- pacman -Q
+    if ((installed_count == 0)); then
+      log "No user-installed packages found"
+      log "Use 'june install <package>' to install packages"
     else
-        if [[ ! -f "$STATE_DB" ]]; then
-            log "No user-installed packages found (state database not found)"
-            log "Use 'june list --all' to see all packages in junest"
-            return 0
-        fi
-
-        local installed_count=0
-        local removed_count=0
-
-        # Parse state database and show currently installed packages
-        while IFS='|' read -r pkg timestamp status; do
-            if [[ -n "$pkg" && -n "$status" ]]; then
-                case "$status" in
-                    "installed")
-                        printf "${GREEN}%s${NC}\n" "$pkg"
-                        ((installed_count++))
-                        ;;
-                    "removed")
-                        ((removed_count++))
-                        ;;
-                esac
-            fi
-        done < "$STATE_DB" 2>/dev/null | sort -u
-
-        if (( installed_count == 0 )); then
-            log "No user-installed packages found"
-            log "Use 'june install <package>' to install packages"
-        else
-            log "Total user-installed packages: ${GREEN}$installed_count${NC}"
-            if (( removed_count > 0 )); then
-                log "Previously removed packages: ${GRAY}$removed_count${NC}"
-            fi
-        fi
-
-        log "Use 'june list --all' to see all packages in junest environment"
+      log "Total user-installed packages: ${GREEN}$installed_count${NC}"
+      if ((removed_count > 0)); then
+        verbose_log "Previously removed packages: ${GRAY}$removed_count${NC}"
+      fi
     fi
+
+    log "Use 'june list --all' to see all packages in junest environment"
+  fi
 }
 
 cmd_search() {
-    local query="$1"
-    ensure_junest || return 1
+  local args=("${CMD_ARGS[@]}")
+  local flags=("${CMD_FLAGS[@]}")
 
-    log "Searching for packages matching '${YELLOW}$query${NC}'..."
-    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Ss "$query" || "${JUNEST_CMD[@]}" -- pacman -Ss "$query"
+  if [[ ${#args[@]} -eq 0 ]]; then
+    err "search requires a query"
+    return 1
+  fi
+
+  local query="${args[0]}"
+  ensure_junest || return 1
+
+  log "Searching for packages matching '${YELLOW}$query${NC}'..."
+
+  # Build search command with flags
+  local search_args=("--color=auto" "-Ss")
+
+  if has_flag "--aur-only" "${flags[@]}"; then
+    search_args=("--color=auto" "-Sas")
+    verbose_log "Searching AUR only"
+  elif has_flag "--repo-only" "${flags[@]}"; then
+    search_args=("--color=auto" "-Ss")
+    verbose_log "Searching repositories only"
+  fi
+
+  "${JUNEST_CMD[@]}" -- ${YAY_CMD} "${search_args[@]}" "$query" || "${JUNEST_CMD[@]}" -- pacman -Ss "$query"
 }
 
 cmd_update() {
-    ensure_junest || return 1
+  local flags=("${CMD_FLAGS[@]}")
 
-    acquire_lock
+  ensure_junest || return 1
+  acquire_lock
 
-    log "Updating package databases and installed packages..."
-    "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Syu --noconfirm || "${JUNEST_CMD[@]}" -- pacman -Syu --noconfirm
+  log "Updating package databases and installed packages..."
 
+  # Build update command with flags
+  local update_args=("--color=auto" "-Syu" "--noconfirm")
+
+  if has_flag "--devel" "${flags[@]}"; then
+    update_args+=("--devel")
+    verbose_log "Including development packages in update"
+  fi
+
+  "${JUNEST_CMD[@]}" -- ${YAY_CMD} "${update_args[@]}" || "${JUNEST_CMD[@]}" -- pacman -Syu --noconfirm
+
+  if ! has_flag "--no-sync" "${flags[@]}"; then
     sync_to_sgoinfre
-    cleanup_lock
+  else
+    verbose_log "Skipping sync due to --no-sync flag"
+  fi
 
-    log "${GREEN}System updated and synced!${NC}"
+  cleanup_lock
+  log "${GREEN}System updated successfully!${NC}"
 }
 
 cmd_startup() {
-    log --startup "Starting june environment sync..."
+  log --startup "Starting june environment sync..."
 
-    export JUNEST_HOME="$JUNEST_ROOT"
+  export JUNEST_HOME="$JUNEST_ROOT"
 
-    if ! ensure_dirs; then
-        err --startup "Failed to ensure required directories"
-        return 1
+  if ! ensure_dirs; then
+    err --startup "Failed to ensure required directories"
+    return 1
+  fi
+
+  # Check if ~/.junest exists (from previous default installation)
+  if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
+    log --startup "Found junest in default location, moving to volatile..."
+    mv "$HOME/.junest" "$JUNEST_ROOT" || {
+      err "Could not move junest dir"
+      return 1
+    }
+  fi
+
+  acquire_lock
+
+  if ! sync_from_sgoinfre; then
+    # Checking for only the directory here is kinda bad but well whatever
+    # One way to break this is doing a mkdir at the beginning of the file (I did this before)
+    if [[ ! -d "$JUNEST_ROOT" ]]; then
+      init_junest
     fi
+  fi
 
-    # Check if ~/.junest exists (from previous default installation)
-    if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
-        log --startup "Found junest in default location, moving to volatile..."
-        mv "$HOME/.junest" "$JUNEST_ROOT" || {
-            err "Could not move junest dir"
-            return 1;
-        }
-    fi
+  verify_shims
 
-    acquire_lock
+  if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+    export PATH="$SHIMS_DIR:$PATH"
+    log --startup "Added $SHIMS_DIR to PATH"
+  fi
 
-    if ! sync_from_sgoinfre; then
-        # Checking for only the directory here is kinda bad but well whatever
-        # One way to break this is doing a mkdir at the beginning of the file (I did this before)
-        if [[ ! -d "$JUNEST_ROOT" ]]; then
-            init_junest
-        fi
-    fi
+  export JUNEST_HOME="$JUNEST_ROOT"
 
-    verify_shims
-
-    if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
-        export PATH="$SHIMS_DIR:$PATH"
-        log --startup "Added $SHIMS_DIR to PATH"
-    fi
-
-    export JUNEST_HOME="$JUNEST_ROOT"
-
-    cleanup_lock
-    log --startup "June environment ready!"
+  cleanup_lock
+  log --startup "June environment ready!"
 }
 
 cmd_clean_june() {
-    log "${YELLOW}This will clean up all junest installations and june data, junest installation, and packages."
-    log "${YELLOW}You will need to reinstall all packages after this.${NC}"
-    log "${RED}**You should probably note down your installed packages** ${YELLOW}(\`june ls\`) so it's easier to reinstall them later on.${NC}"
-    read -p "Continue? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log "Cancelled."
-        return 0
-    fi
+  log "${YELLOW}This will clean up all junest installations and june data, junest installation, and packages."
+  log "${YELLOW}You will need to reinstall all packages after this.${NC}"
+  log "${RED}**You should probably note down your installed packages** ${YELLOW}(\`june ls\`) so it's easier to reinstall them later on.${NC}"
+  read -p "Continue? (y/N) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    log "Cancelled."
+    return 0
+  fi
 
-    log "Cleaning up junest installations..."
+  log "Cleaning up junest installations..."
 
-    # Remove default junest location
-    if [[ -d "$HOME/.junest" ]]; then
-        log "Removing ~/.junest..."
-        rm -rf "$HOME/.junest"
-    fi
+  # Remove default junest location
+  if [[ -d "$HOME/.junest" ]]; then
+    log "Removing ~/.junest..."
+    rm -rf "$HOME/.junest"
+  fi
 
-    # Remove volatile junest
-    if [[ -d "$JUNEST_ROOT" ]]; then
-        log "Removing $JUNEST_ROOT..."
-        rm -rf "$JUNEST_ROOT"
-    fi
+  # Remove volatile junest
+  if [[ -d "$JUNEST_ROOT" ]]; then
+    log "Removing $JUNEST_ROOT..."
+    rm -rf "$JUNEST_ROOT"
+  fi
 
-    # Remove persistsnt archive
-    if [[ -f "$JUNEST_ARCHIVE" ]]; then
-        log "Removing persistent archive..."
-        rm -f "$JUNEST_ARCHIVE"
-    fi
+  # Remove persistsnt archive
+  if [[ -f "$JUNEST_ARCHIVE" ]]; then
+    log "Removing persistent archive..."
+    rm -f "$JUNEST_ARCHIVE"
+  fi
 
-    # Remove state files
-    rm -f "$STATE_DB"
-    rm -f "$JUNE_STATE"
-    rm -f "$JUNEST_LOCK"
-    rm -f "$LOG_FILE"
+  # Remove state files
+  rm -f "$STATE_DB"
+  rm -f "$JUNE_STATE"
+  rm -f "$JUNEST_LOCK"
+  rm -f "$LOG_FILE"
 
-    # Remove shims
-    if [[ -d "$SHIMS_DIR" ]]; then
-        log "Removing june shims..."
-        for shim in "$SHIMS_DIR"/*; do
-            if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
-                rm -f "$shim"
-                log "  Removed: $(basename "$shim")"
-            fi
-        done
-    fi
+  # Remove shims
+  if [[ -d "$SHIMS_DIR" ]]; then
+    log "Removing june shims..."
+    for shim in "$SHIMS_DIR"/*; do
+      if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+        rm -f "$shim"
+        verbose_log "  Removed: $(basename "$shim")"
+      fi
+    done
+  fi
 
-    log "Cleanup complete!"
-    log "You can now run 'june startup' to initialize a fresh environment."
+  log "Cleanup complete!"
+  log "You can now run 'june startup' to initialize a fresh environment."
 }
 
 cmd_doctor() {
-    log "Environment Variables:"
-    log "  JUNEST_HOME: ${JUNEST_HOME:-[not set]}"
-    log "  PATH contains ~/bin: $(echo "$PATH" | grep -q "$HOME/bin" && echo "yes" || echo "no")"
+  log "June Doctor - Environment Health Check"
+  log "======================================="
 
-    log "Directories:"
-    log "  ~/.junest: "
-    [[ -d "$HOME/.junest" ]] && err "EXISTS (should be removed!)" || log "not found (good)"
+  log "Version: ${GREEN}${VERSION}${NC}"
 
-    log "  $JUNEST_ROOT: "
-    [[ -d "$JUNEST_ROOT" ]] && log "exists" || err "NOT FOUND"
+  log "\nEnvironment Variables:"
+  log "  JUNEST_HOME: ${JUNEST_HOME:-[not set]}"
+  log "  PATH contains ~/bin: $(echo "$PATH" | grep -q "$HOME/bin" && echo "${GREEN}yes${NC}" || echo "${RED}no${NC}")"
+  log "  Global flags: verbose=${GLOBAL_VERBOSE}, quiet=${GLOBAL_QUIET}"
 
-    log "  ~/bin: "
-    [[ -d "$HOME/bin" ]] && log "exists" || err "NOT FOUND"
+  log "\nDirectories:"
+  log "  ~/.junest: "
+  [[ -d "$HOME/.junest" ]] && err "EXISTS (should be removed!)" || log "${GREEN}not found (good)${NC}"
 
-    log "Files:"
-    log "  junest archive: "
-    [[ -f "$JUNEST_ARCHIVE" ]] && log "exists ($(du -h "$JUNEST_ARCHIVE" | cut -f1))" || err "not found"
+  log "  $JUNEST_ROOT: "
+  [[ -d "$JUNEST_ROOT" ]] && log "${GREEN}exists${NC}" || err "NOT FOUND"
 
-    log "  junest command: "
-    command -v junest &>/dev/null && log "found at $(command -v junest)" || err "NOT FOUND"
+  log "  ~/bin: "
+  [[ -d "$HOME/bin" ]] && log "${GREEN}exists${NC}" || err "NOT FOUND"
 
-    log "Junest Status:"
-    if command -v junest &>/dev/null; then
-        export JUNEST_HOME="$JUNEST_ROOT"
-        if [[ -d "$JUNEST_HOME" ]]; then
-            log "  Trying to run junest with JUNEST_HOME=$JUNEST_HOME"
-            junest -- echo "[june]   junest is working!" 2>&1 | head -5
-        else
-            err "  JUNEST_HOME directory does not exist"
-        fi
+  log "\nFiles:"
+  log "  junest archive: "
+  [[ -f "$JUNEST_ARCHIVE" ]] && log "${GREEN}exists ($(du -h "$JUNEST_ARCHIVE" | cut -f1))${NC}" || err "not found"
+
+  log "  junest command: "
+  command -v junest &>/dev/null && log "${GREEN}found at $(command -v junest)${NC}" || err "NOT FOUND"
+
+  log "\nJunest Status:"
+  if command -v junest &>/dev/null; then
+    export JUNEST_HOME="$JUNEST_ROOT"
+    if [[ -d "$JUNEST_HOME" ]]; then
+      log "  Trying to run junest with JUNEST_HOME=$JUNEST_HOME"
+      junest -- echo "${GREEN}[june]   junest is working!${NC}" 2>&1 | head -5
     else
-        err "  Cannot test - junest not installed"
+      err "  JUNEST_HOME directory does not exist"
     fi
+  else
+    err "  Cannot test - junest not installed"
+  fi
 
-    log "Shims:"
-    if [[ -d "$SHIMS_DIR" ]]; then
-        local count=0
-        for shim in "$SHIMS_DIR"/*; do
-            if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
-                log "  - $(basename "$shim")"
-                ((count++))
-            fi
-        done
-        [[ $count -eq 0 ]] && log "  No june shims found"
-    else
-        log "  ~/bin directory not found"
-    fi
+  log "\nShims:"
+  if [[ -d "$SHIMS_DIR" ]]; then
+    local count=0
+    for shim in "$SHIMS_DIR"/*; do
+      if [[ -f "$shim" ]] && grep -q "#june-shim" "$shim" 2>/dev/null; then
+        log "  - ${GREEN}$(basename "$shim")${NC}"
+        ((count++)) || true
+      fi
+    done
+    [[ $count -eq 0 ]] && log "  ${GRAY}No june shims found${NC}"
+  else
+    log "  ${GRAY}~/bin directory not found${NC}"
+  fi
 
-    log "User-installed packages:"
-    if [[ -f "$STATE_DB" ]]; then
-        local installed_count=0
-        while IFS='|' read -r pkg timestamp status; do
-            if [[ -n "$pkg" && "$status" == "installed" ]]; then
-                ((installed_count++))
-            fi
-        done < "$STATE_DB" 2>/dev/null
-        log "  $installed_count packages tracked in state database"
-    else
-        log "  No state database found"
-    fi
+  log "\nUser-installed packages:"
+  if [[ -f "$STATE_DB" ]]; then
+    local installed_count=0
+    while IFS='|' read -r pkg timestamp status; do
+      if [[ -n "$pkg" && "$status" == "installed" ]]; then
+        ((installed_count++)) || true
+      fi
+    done <"$STATE_DB" 2>/dev/null
+    log "  ${GREEN}$installed_count${NC} packages tracked in state database"
+  else
+    log "  ${GRAY}No state database found${NC}"
+  fi
 
-    log "Recommendations:"
-    if [[ -d "$HOME/.junest" ]]; then
-        log "  ! Remove ~/.junest directory (run 'june clean-june')"
-    fi
-    if [[ ! -d "$JUNEST_ROOT" ]]; then
-        log "  ! Run 'june startup' to initialize junest"
-    fi
-    if ! command -v junest &>/dev/null; then
-        log "  ! Install junest:"
-        log "    curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest"
-        log "    chmod +x ~/.local/bin/junest"
-        log "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    fi
+  log "\nRecommendations:"
+  if [[ -d "$HOME/.junest" ]]; then
+    log "  ${RED}!${NC} Remove ~/.junest directory (run 'june clean-june')"
+  fi
+  if [[ ! -d "$JUNEST_ROOT" ]]; then
+    log "  ${RED}!${NC} Run 'june startup' to initialize junest"
+  fi
+  if ! command -v junest &>/dev/null; then
+    log "  ${RED}!${NC} Install junest:"
+    log "    curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest"
+    log "    chmod +x ~/.local/bin/junest"
+    log "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+
+  if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+    log "  ${YELLOW}!${NC} Add ~/bin to your PATH in your shell configuration"
+  fi
 }
 
-# --- Main dispatch ---
+# **************************************************************************** #
+#                                Main dispatch                                 #
+# **************************************************************************** #
+# Global variables for parsed command flags
+declare -a CMD_ARGS=()
+declare -a CMD_FLAGS=()
+
 # Check if being sourced (for startup functionality from shell rc files)
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
-    # Being sourced - run startup if needed
-    export JUNEST_HOME="$JUNEST_ROOT"
-    if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
-        cmd_startup
-    else
-        # Quick check if PATH needs updating
-        if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
-            export PATH="$SHIMS_DIR:$PATH"
-        fi
+  # Being sourced - run startup if needed
+  export JUNEST_HOME="$JUNEST_ROOT"
+  if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
+    cmd_startup
+  else
+    # Quick check if PATH needs updating
+    if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+      export PATH="$SHIMS_DIR:$PATH"
     fi
-    return 0
+  fi
+  return 0
 fi
 
-if [[ $# -gt 0 && ("$1" == "--help" || "$1" == "-h") ]]; then
-    show_help
-    exit 0
-fi
+# Parse all arguments
+original_args=("$@")
+parse_global_flags original_args
 
 # Command dispatch
-if (( $# < 1 )); then
-    show_help
-    exit 0
+if ((${#original_args[@]} < 1)); then
+  show_help
+  exit 0
 fi
 
-case "$1" in
-    install)
-        (( $# >= 2 )) || { err "install requires at least one package name"; exit 2; }
-        cmd_install "${@:2}" ;;
-    remove|uninstall)
-        (( $# >= 2 )) || { err "remove requires at least one package name"; exit 2; }
-        cmd_remove "${@:2}" ;;
-    list|ls)
-        shift
-        cmd_list "$@" ;;
-    search|find)
-        (( $# == 2 )) || { err "search requires a query"; exit 2; }
-        cmd_search "$2" ;;
-    update|upgrade)
-        cmd_update ;;
-    sync)
-        cmd_sync ;;
-    startup)
-        cmd_startup ;;
-    clean-june)
-        cmd_clean_june ;;
-    doctor)
-        cmd_doctor ;;
-    junest)
-        "${JUNEST_CMD[@]}" "${@:2}" ;;
-    *)
-        err "unknown command: $1"
-        err "Use 'june --help' for usage information"
-        exit 2 ;;
+command="${original_args[0]}"
+command_args=("${original_args[@]:1}")
+
+# Parse command-specific flags
+parse_command_flags "$command" "${command_args[@]}"
+
+case "$command" in
+install)
+  cmd_install
+  ;;
+remove | uninstall)
+  cmd_remove
+  ;;
+list | ls)
+  cmd_list
+  ;;
+search | find)
+  cmd_search
+  ;;
+update | upgrade)
+  cmd_update
+  ;;
+sync)
+  cmd_sync
+  ;;
+startup)
+  cmd_startup
+  ;;
+clean-june)
+  cmd_clean_june
+  ;;
+doctor)
+  cmd_doctor
+  ;;
+junest)
+  "${JUNEST_CMD[@]}" "${CMD_ARGS[@]}"
+  ;;
+*)
+  err "unknown command: $command"
+  err "Use 'june --help' for usage information"
+  exit 2
+  ;;
 esac
