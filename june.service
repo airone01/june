@@ -1,0 +1,19 @@
+########
+# WARN #
+########
+# This startup script uses the dev version
+
+[Unit]
+Description=June Startup Sync
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /sgoinfre/elagouch/june_dev/june --verbose startup-systemd
+RemainAfterExit=true
+
+Environment="HOME=%h"
+
+[Install]
+WantedBy=default.target

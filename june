@@ -22,14 +22,14 @@ JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 # Common commands
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt)
-# 3/4 of the proc in adapt mode
+COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt) # 3/4 of the proc in adapt mode
 DECOMPRESS_CMD=(zstd -d)
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
 export JUNEST_HOME="$JUNEST_ROOT" # for junest to find the forrect path
 # Global flags
 GLOBAL_VERBOSE=false
 GLOBAL_QUIET=false
+GLOBAL_REDUCED_LOG=false # reduced log length
 
 # **************************************************************************** #
 #                               Helper functions                               #
@@ -39,29 +39,23 @@ log() {
     return
   fi
 
-  if [[ "$1" == "--startup" ]]; then
-    shift
-    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
-    echo "$msg" | tee -a "$LOG_FILE"
+  if [[ "$GLOBAL_REDUCED_LOG" == "true" ]]; then
+    printf "%s\n" "$*"
   else
     printf "${BLUE}[june]${NC} %s\n" "$*"
   fi
 }
 
 verbose_log() {
-  if [[ "$GLOBAL_VERBOSE" == "true" ]]; then
-    log "$@"
+  if [[ "$GLOBAL_VERBOSE" != "true" ]]; then
+    return
   fi
+
+  log "$@"
 }
 
 err() {
-  if [[ "$1" == "--startup" ]]; then
-    shift
-    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*"
-    echo "$msg" >&2 | tee -a "$LOG_FILE"
-  else
-    printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2
-  fi
+  printf "${RED}[june] ERROR: %s${NC}\n" "$*" >&2
 }
 
 # **************************************************************************** #
@@ -375,12 +369,12 @@ ensure_junest() {
 }
 
 init_junest() {
-  log --startup "Initializing new junest environment..."
+  log "Initializing new junest environment..."
 
   # Check if junest is available
   if ! command -v junest &>/dev/null; then
-    err --startup "junest not found in PATH - please install junest first"
-    err --startup "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+    err "junest not found in PATH - please install junest first"
+    err "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
     return 1
   fi
 
@@ -388,25 +382,25 @@ init_junest() {
 
   # Remove any existing incomplete setup
   if [[ -d "$JUNEST_ROOT" ]]; then
-    log --startup "Cleaning incomplete junest setup..."
+    log "Cleaning incomplete junest setup..."
     rm -rf "$JUNEST_ROOT"
   fi
 
   # Initialize junest in the correct location
   if ! junest setup; then
-    err --startup "Failed to initialize junest"
+    err "Failed to initialize junest"
     return 1
   fi
 
   # Update Junest env to avoid errors later
-  log --startup "Updating junest env"
+  log "Updating junest env"
   junest -- bash -c "
         yay -Syy --noconfirm &&
         yay -Syu --noconfirm &&
         yay -S --noconfirm --needed base-devel git
-    " || log --startup "Note: junest env installation failed"
+    " || log "Note: junest env installation failed"
 
-  log --startup "Junest initialized - saving to persistent storage..."
+  log "Junest initialized - saving to persistent storage..."
   sync_to_sgoinfre
 }
 
@@ -429,7 +423,10 @@ EOF
 }
 
 verify_shims() {
+  verbose_log "Verifying shims"
+
   if [[ ! -d "$SHIMS_DIR" ]]; then
+    verbose_log "Could not find the shims dir. Aborting."
     return
   fi
 
@@ -439,12 +436,12 @@ verify_shims() {
       # Update JUNEST_HOME in shim if needed
       sed -i "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null ||
         sed -i '' "s|^export JUNEST_HOME=.*|export JUNEST_HOME=\"${JUNEST_ROOT}\"|" "$shim" 2>/dev/null
-      ((shim_count++))
+      ((shim_count++)) || true
     fi
   done
 
   if ((shim_count > 0)); then
-    log --startup "Verified $shim_count june shims"
+    log "Verified $shim_count june shims"
   fi
 }
 
@@ -462,7 +459,7 @@ ensure_dirs() {
 
   # Check if persistent storage is accessible
   if ! touch "${PERSISTENT}/.test" 2>/dev/null; then
-    err --startup "persistent storage not accessible at ${PERSISTENT}"
+    err "persistent storage not accessible at ${PERSISTENT}"
     return 1
   fi
   rm -f "${PERSISTENT}/.test"
@@ -511,11 +508,11 @@ sync_to_sgoinfre() {
 # **************************************************************************** #
 sync_from_sgoinfre() {
   if [[ ! -f "$JUNEST_ARCHIVE" ]]; then
-    log --startup "No junest archive found in persistent storage - will create fresh environment"
+    log "No junest archive found in persistent storage - will create fresh environment"
     return 1
   fi
 
-  log --startup "Found junest archive in persistent storage ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
+  log "Found junest archive in persistent storage ($(du -h "$JUNEST_ARCHIVE" | cut -f1))"
 
   # Check if local junest already exists and is up-to-date
   if [[ -d "$JUNEST_ROOT" ]]; then
@@ -525,38 +522,40 @@ sync_from_sgoinfre() {
     if [[ -f "$local_marker" ]]; then
       local local_time=$(cat "$local_marker")
       if [[ "$archive_time" == "$local_time" ]]; then
-        log --startup "Local junest environment is up-to-date, skipping sync"
+        log "Local junest environment is up-to-date, skipping sync"
         return 0
       fi
     fi
 
-    log --startup "Local junest environment outdated, updating..."
+    log "Local junest environment outdated, updating..."
     rm -rf "$JUNEST_ROOT"
   fi
 
-  log --startup "Decompressing junest archive to volatile..."
+  log "Decompressing junest archive to volatile..."
   mkdir -p "$JUNEST_ROOT"
 
   if ! command -v pv >/dev/null 2>&1; then
+    verbose_log "Note: pv wasn't found in path. Assuming systemd mode."
     if ! "${DECOMPRESS_CMD[@]}" <"$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
-      err --startup "Failed to decompress junest archive"
+      err "Failed to decompress junest archive"
       rm -rf "$JUNEST_ROOT"
       return 1
     fi
   else
     local archive_size
     archive_size=$(du -sb "$JUNEST_ARCHIVE" 2>/dev/null | cut -f1)
+    verbose_log "Archive size is $archive_size"
     if [[ ! "$archive_size" =~ ^[0-9]+$ ]]; then
-      err --startup "Failed to get archive size, falling back to decompression without progress bar"
+      err "Failed to get archive size, falling back to decompression without progress bar"
       if ! "${DECOMPRESS_CMD[@]}" <"$JUNEST_ARCHIVE" | tar -xf - -C "$VOLATILE"; then
-        err --startup "Failed to decompress junest archive"
+        err "Failed to decompress junest archive"
         rm -rf "$JUNEST_ROOT"
         return 1
       fi
     else
-      log --startup "Archive size: $archive_size bytes"
+      log "Archive size: $archive_size bytes"
       if ! pv -s "$archive_size" -petr "$JUNEST_ARCHIVE" | "${DECOMPRESS_CMD[@]}" | tar -xf - -C "$VOLATILE"; then
-        err --startup "Failed to decompress junest archive"
+        err "Failed to decompress junest archive"
         rm -rf "$JUNEST_ROOT"
         return 1
       fi
@@ -570,7 +569,7 @@ sync_from_sgoinfre() {
     cp "$JUNE_STATE" "$STATE_DB"
   fi
 
-  log --startup "Junest environment synced successfully"
+  log "Junest environment synced successfully"
   return 0
 }
 
@@ -900,18 +899,18 @@ cmd_update() {
 }
 
 cmd_startup() {
-  log --startup "Starting june environment sync..."
+  verbose_log "Starting june environment sync..."
 
   export JUNEST_HOME="$JUNEST_ROOT"
 
   if ! ensure_dirs; then
-    err --startup "Failed to ensure required directories"
+    err "Failed to ensure required directories"
     return 1
   fi
 
   # Check if ~/.junest exists (from previous default installation)
   if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
-    log --startup "Found junest in default location, moving to volatile..."
+    verbose_log "Found junest in default location, moving to volatile..."
     mv "$HOME/.junest" "$JUNEST_ROOT" || {
       err "Could not move junest dir"
       return 1
@@ -924,21 +923,37 @@ cmd_startup() {
     # Checking for only the directory here is kinda bad but well whatever
     # One way to break this is doing a mkdir at the beginning of the file (I did this before)
     if [[ ! -d "$JUNEST_ROOT" ]]; then
+      verbose_log "WARNING INITIALIZING JUNEST FROM SCRATCH"
       init_junest
     fi
   fi
 
   verify_shims
 
-  if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
-    export PATH="$SHIMS_DIR:$PATH"
-    log --startup "Added $SHIMS_DIR to PATH"
-  fi
+  # if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+  #   export PATH="$SHIMS_DIR:$PATH"
+  #   verbose_log "Added $SHIMS_DIR to PATH"
+  # fi
 
   export JUNEST_HOME="$JUNEST_ROOT"
 
   cleanup_lock
-  log --startup "June environment ready!"
+  verbose_log "June environment ready!"
+}
+
+cmd_startup_systemd() {
+  GLOBAL_REDUCED_LOG=true
+
+  verbose_log "PATH: $PATH"
+  verbose_log "HOME: $HOME"
+  verbose_log "JUNEST_HOME: $JUNEST_HOME"
+  verbose_log "JUNEST_ROOT: $JUNEST_ROOT"
+  verbose_log "COMPRESS_CMD: ${COMPRESS_CMD[@]}"
+  verbose_log "DECOMPRESS_CMD: ${DECOMPRESS_CMD[@]}"
+  verbose_log "YAY_CMD: $YAY_CMD"
+  verbose_log "SHIMS_DIR: $SHIMS_DIR"
+
+  cmd_startup
 }
 
 cmd_clean_june() {
@@ -1139,6 +1154,9 @@ sync)
   ;;
 startup)
   cmd_startup
+  ;;
+startup-systemd)
+  cmd_startup_systemd
   ;;
 clean-june)
   cmd_clean_june
