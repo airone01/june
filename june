@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v0.1.4
+# v0.1.5
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -43,7 +43,6 @@ NORMAL_BINDS=(
 )
 SHIM_BINDS=(
     "${COMMON_BINDS[@]}"
-    $(make_bind ~/.config/spotify-player ~/.config/spotify-player)
 )
 NORMAL_ENV=(
     $(make_env OPENSSL_DIR /usr)
