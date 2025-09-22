@@ -22,7 +22,7 @@ JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 # Common commands
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T$(($(nproc) * 1 / 4)) --adapt) # 3/4 of the proc in adapt mode
+COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt) # 3/4 of the proc in adapt mode
 #COMPRESS_CMD=(zstd -T$(($(nproc) * 1 / 2)) --fast) # 1/2 of the proc in fast mode
 COMPRESS_EXCLUDE=(--exclude="var/cache" --exclude run --exclude goinfre --exclude sgoinfre --exclude "python3*/__pycache__")
 DECOMPRESS_CMD=(zstd -d)
