@@ -4,14 +4,16 @@
 # This startup script uses the dev version
 
 [Unit]
-Description=June Startup Sync
+Description=June Login/Logout Sync
 After=graphical-session.target
 Wants=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/env bash /sgoinfre/elagouch/june_dev/june --verbose startup-systemd
+ExecStart=/usr/bin/env bash /sgoinfre/elagouch/june_dev/june --verbose systemd-start
+ExecStop=/usr/bin/env bash /sgoinfre/elagouch/june_dev/june --verbose systemd-stop
 RemainAfterExit=true
+TimeoutStopSec=600s
 
 Environment="HOME=%h"
 

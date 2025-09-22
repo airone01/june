@@ -8,7 +8,7 @@ IFS=$'\n\t'
 # **************************************************************************** #
 VERSION="0.2.0"
 # Common directories
-PERSISTENT="${HOME}/sgoinfre"
+PERSISTENT="/sgoinfre/${USER}"
 VOLATILE="/tmp"
 YAY_CACHE_DIR_ORIGIN="${HOME}/.cache/yay"
 YAY_CACHE_DIR_DEST="/tmp/june_yay_cache"
@@ -22,7 +22,9 @@ JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 # Common commands
 YAY_CMD="yay"
-COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt) # 3/4 of the proc in adapt mode
+COMPRESS_CMD=(zstd -T$(($(nproc) * 1 / 4)) --adapt) # 3/4 of the proc in adapt mode
+#COMPRESS_CMD=(zstd -T$(($(nproc) * 1 / 2)) --fast) # 1/2 of the proc in fast mode
+COMPRESS_EXCLUDE=(--exclude="var/cache" --exclude run --exclude goinfre --exclude sgoinfre --exclude "python3*/__pycache__")
 DECOMPRESS_CMD=(zstd -d)
 JUNEST_VANILLA_CMD="$(command -v junest 2>/dev/null || true)"
 export JUNEST_HOME="$JUNEST_ROOT" # for junest to find the forrect path
@@ -335,6 +337,7 @@ acquire_lock() {
   local waited=0
 
   while [[ -f "$JUNEST_LOCK" ]] && ((waited < max_wait)); do
+    verbose_log "Flag already taken at $JUNEST_LOCK"
     log "Waiting for another june operation to complete..."
     sleep 2
     ((waited += 2))
@@ -354,9 +357,11 @@ acquire_lock() {
 #                               Junest functions                               #
 # **************************************************************************** #
 ensure_junest() {
+  verbose_log "Ensuring Junest"
+
   if [[ -z $JUNEST_CMD[0] ]]; then
     err "junest not found in PATH. Install junest first."
-    err "Run: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+    err "Run: curl -L https://github.com/fsquillace/junest/releases/download/7.4.10/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
     return 1
   fi
 
@@ -374,7 +379,7 @@ init_junest() {
   # Check if junest is available
   if ! command -v junest &>/dev/null; then
     err "junest not found in PATH - please install junest first"
-    err "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
+    err "You can install it with: curl -L https://github.com/fsquillace/junest/releases/download/7.4.10/junest -o ~/.local/bin/junest && chmod +x ~/.local/bin/junest"
     return 1
   fi
 
@@ -471,11 +476,11 @@ sync_to_sgoinfre() {
     return 1
   fi
 
-  log "Syncing junest environment to ${YELLOW}persistent storage${NC}..."
+  log "Syncing junest environment (${YELLOW}volatile -> persistent${NC})"
   local temp_archive="${JUNEST_ARCHIVE}.tmp"
 
   if ! command -v pv >/dev/null 2>&1; then
-    if ! tar -cf - --exclude="var/cache" -C "$VOLATILE" junest-root | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
+    if ! tar -cf - $COMPRESS_EXCLUDE -C "$VOLATILE" junest-root | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
       err "Failed to compress junest environment"
       rm -f "$temp_archive"
       return 1
@@ -483,7 +488,7 @@ sync_to_sgoinfre() {
   else
     local dir_size
     dir_size=$(du -sb "$JUNEST_ROOT" | cut -f1)
-    if ! tar -cf - --exclude="var/cache" -C "$VOLATILE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
+    if ! tar -cf - $COMPRESS_EXCLUDE -C "$VOLATILE" junest-root | pv -s "$dir_size" -petr | "${COMPRESS_CMD[@]}" >"$temp_archive"; then
       err "Failed to compress junest environment"
       rm -f "$temp_archive"
       return 1
@@ -601,7 +606,8 @@ show_help() {
   printf "  ${BLUE}search${GREEN} <query>${NC}  Search for packages\n"
   printf "    ${GRAY}Options: --aur-only, --repo-only${NC}\n"
   printf "  ${BLUE}update${NC}          Update all packages\n"
-  printf "    ${GRAY}Options: --no-sync, --devel${NC}\n\n"
+  printf "    ${GRAY}Options: --no-sync, --devel${NC}\n"
+  printf "  ${BLUE}generate-shims${NC}  Generate/update shims for all installed packages\n\n"
 
   printf "${YELLOW}Commands (image):${NC}\n"
   printf "  ${BLUE}sync${NC}            Syncs volatile → persistent\n"
@@ -899,7 +905,7 @@ cmd_update() {
 }
 
 cmd_startup() {
-  verbose_log "Starting june environment sync..."
+  verbose_log "Syncing junest environment (volatile <- persistent)"
 
   export JUNEST_HOME="$JUNEST_ROOT"
 
@@ -939,21 +945,6 @@ cmd_startup() {
 
   cleanup_lock
   verbose_log "June environment ready!"
-}
-
-cmd_startup_systemd() {
-  GLOBAL_REDUCED_LOG=true
-
-  verbose_log "PATH: $PATH"
-  verbose_log "HOME: $HOME"
-  verbose_log "JUNEST_HOME: $JUNEST_HOME"
-  verbose_log "JUNEST_ROOT: $JUNEST_ROOT"
-  verbose_log "COMPRESS_CMD: ${COMPRESS_CMD[@]}"
-  verbose_log "DECOMPRESS_CMD: ${DECOMPRESS_CMD[@]}"
-  verbose_log "YAY_CMD: $YAY_CMD"
-  verbose_log "SHIMS_DIR: $SHIMS_DIR"
-
-  cmd_startup
 }
 
 cmd_clean_june() {
@@ -1080,9 +1071,9 @@ cmd_doctor() {
   if [[ -d "$HOME/.junest" ]]; then
     log "  ${RED}!${NC} Remove ~/.junest directory (run 'june clean-june')"
   fi
-  if [[ ! -d "$JUNEST_ROOT" ]]; then
-    log "  ${RED}!${NC} Run 'june startup' to initialize junest"
-  fi
+  #if [[ ! -d "$JUNEST_ROOT" ]]; then
+  #  log "  ${RED}!${NC} Run 'june startup' to initialize junest"
+  #fi
   if ! command -v junest &>/dev/null; then
     log "  ${RED}!${NC} Install junest:"
     log "    curl -L https://github.com/fsquillace/junest/releases/download/8.1.0/junest -o ~/.local/bin/junest"
@@ -1092,6 +1083,131 @@ cmd_doctor() {
 
   if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
     log "  ${YELLOW}!${NC} Add ~/bin to your PATH in your shell configuration"
+  fi
+}
+
+# **************************************************************************** #
+#                             Systemd subcommands                              #
+# **************************************************************************** #
+display_global_vars() {
+  # Debug prints
+  log "VERSION=$VERSION"
+  log "PERSISTENT=$PERSISTENT"
+  log "VOLATILE=$VOLATILE"
+  log "YAY_CACHE_DIR_ORIGIN=$YAY_CACHE_DIR_ORIGIN"
+  log "YAY_CACHE_DIR_DEST=$YAY_CACHE_DIR_DEST"
+  log "JUNEST_ROOT=$JUNEST_ROOT"
+  log "JUNEST_ARCHIVE=$JUNEST_ARCHIVE"
+  log "JUNEST_LOCK=$JUNEST_LOCK"
+  log "SHIMS_DIR=$SHIMS_DIR"
+  log "STATE_DB=$STATE_DB"
+  log "JUNE_STATE=$JUNE_STATE"
+  log "LOG_FILE=$LOG_FILE"
+  log "YAY_CMD=$YAY_CMD"
+  log "COMPRESS_CMD=$(printf '%s ' "${COMPRESS_CMD[@]}" | tr '\n' ' ')"
+  log "DECOMPRESS_CMD=$(printf '%s ' "${DECOMPRESS_CMD[@]}" | tr '\n' ' ')"
+  log "COMPRESS_EXCLUDE=$(printf '%s ' "${COMPRESS_EXCLUDE[@]}" | tr '\n' ' ')"
+  log "JUNEST_VANILLA_CMD=$JUNEST_VANILLA_CMD"
+  log "JUNEST_HOME=$JUNEST_HOME"
+  log "GLOBAL_VERBOSE=$GLOBAL_VERBOSE"
+  log "GLOBAL_QUIET=$GLOBAL_QUIET"
+  log "GLOBAL_REDUCED_LOG=$GLOBAL_REDUCED_LOG"
+  echo
+}
+
+cmd_startup_systemd() {
+  GLOBAL_REDUCED_LOG=true
+
+  display_global_vars
+  cmd_startup
+}
+
+cmd_sync_systemd() {
+  GLOBAL_REDUCED_LOG=true
+
+  display_global_vars
+  cmd_sync
+}
+
+cmd_generate_shims() {
+  ensure_junest || return 1
+
+  # Packages to ignore when generating shims
+  local ignored_packages=("archlinux-keyring" "base-devel" coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
+
+  log "Generating shims for all explicitly installed packages..."
+
+  local total_shims=0
+  local processed_packages=0
+  local current_packages=()
+
+  # Get list of explicitly installed packages using pacman -Qe
+  local pacman_output
+  pacman_output=$("${JUNEST_CMD[@]}" -- pacman -Qe 2>/dev/null) || {
+    err "Failed to query installed packages"
+    return 1
+  }
+
+  # Parse pacman output to get package names only
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      local pkg_name=$(echo "$line" | awk '{print $1}')
+      if [[ -n "$pkg_name" ]]; then
+        # Check if package should be ignored
+        local should_ignore=false
+        for ignored_pkg in "${ignored_packages[@]}"; do
+          if [[ "$pkg_name" == "$ignored_pkg" ]]; then
+            should_ignore=true
+            verbose_log "Ignoring package: $pkg_name"
+            break
+          fi
+        done
+
+        if [[ "$should_ignore" == "false" ]]; then
+          current_packages+=("$pkg_name")
+        fi
+      fi
+    fi
+  done <<<"$pacman_output"
+
+  if [[ ${#current_packages[@]} -eq 0 ]]; then
+    log "No explicitly installed packages found"
+    return 0
+  fi
+
+  log "Found ${#current_packages[@]} installed packages"
+
+  # Generate shims for each package
+  for pkg in "${current_packages[@]}"; do
+    verbose_log "Processing package: ${GREEN}$pkg${NC}"
+
+    local bins
+    bins=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=never -Ql "$pkg" 2>/dev/null | grep -E '/(s?bin|opt/[^/]+/bin)/' | grep -v '/$' | awk '{print $2}' | sort -u)
+
+    if [[ -z "$bins" ]]; then
+      verbose_log "  No executables found in package $pkg"
+    else
+      local pkg_shim_count=0
+      while IFS= read -r bin_path; do
+        if [[ -n "$bin_path" ]]; then
+          local bin_name=$(basename "$bin_path")
+          create_shim "$bin_path" "$bin_name"
+          ((pkg_shim_count++)) || true
+          ((total_shims++)) || true
+        fi
+      done <<<"$bins"
+      verbose_log "  Generated $pkg_shim_count shims for $pkg"
+    fi
+
+    ((processed_packages++)) || true
+  done
+
+  log "Shim generation complete!"
+  log "Processed ${GREEN}$processed_packages${NC} packages"
+  log "Generated ${GREEN}$total_shims${NC} shims in ${YELLOW}$SHIMS_DIR${NC}"
+
+  if [[ $total_shims -gt 0 ]]; then
+    log "Make sure ${YELLOW}$SHIMS_DIR${NC} is in your PATH to use these commands"
   fi
 }
 
@@ -1130,6 +1246,10 @@ fi
 command="${original_args[0]}"
 command_args=("${original_args[@]:1}")
 
+if $GLOBAL_VERBOSE; then
+  display_global_vars
+fi
+
 # Parse command-specific flags
 parse_command_flags "$command" "${command_args[@]}"
 
@@ -1155,14 +1275,20 @@ sync)
 startup)
   cmd_startup
   ;;
-startup-systemd)
+systemd-start)
   cmd_startup_systemd
+  ;;
+systemd-stop)
+  cmd_sync_systemd
   ;;
 clean-june)
   cmd_clean_june
   ;;
 doctor)
   cmd_doctor
+  ;;
+generate-shims)
+  cmd_generate_shims
   ;;
 junest)
   "${JUNEST_CMD[@]}" "${CMD_ARGS[@]}"
