@@ -1,19 +1,14 @@
 /* June Tray Extension Styles */
 
-.june-spinner {
-    animation: june-spin 1s linear infinite;
-    color: #3584e4; /* Blue color for spinner */
-}
-
 .june-status-header {
     font-weight: bold;
     color: #ffffff;
 }
 
 .june-status-active {
-    color: #26a269; /* Green for active */
+    color: #007FFF;
 }
 
 .june-status-idle {
-    color: #77767b; /* Gray for idle */
+    color: #26a269;
 }

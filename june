@@ -74,6 +74,7 @@ make_env() {
 COMMON_BINDS=(
   $(make_bind /sgoinfre /sgoinfre)
   $(make_bind /goinfre /goinfre)
+  $(make_bind /usr/share/icons /usr/share/icons)
 )
 NORMAL_BINDS=(
   "${COMMON_BINDS[@]}"
