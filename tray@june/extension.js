@@ -13,7 +13,7 @@ const MSG_STATUS_STARTUP = "June is loading your apps...";
 var JuneTrayIndicator = GObject.registerClass(
 class JuneTrayIndicator extends PanelMenu.Button {
     _init() {
-        super._init(0.0, 'June Tray');
+        super._init(0.0, 'June Tray Integration');
 
         this._icon = new St.Icon({
             style_class: 'system-status-icon',

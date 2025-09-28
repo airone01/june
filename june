@@ -6,7 +6,7 @@ IFS=$'\n\t'
 # **************************************************************************** #
 #                                Common consts                                 #
 # **************************************************************************** #
-VERSION="0.2.0"
+VERSION="0.2.1"
 # Common directories
 PERSISTENT="/sgoinfre/${USER}"
 VOLATILE="/tmp"
@@ -611,8 +611,8 @@ show_help() {
   printf "  ${BLUE}generate-shims${NC}  Generate/update shims for all installed packages\n\n"
 
   printf "${YELLOW}Commands (image):${NC}\n"
-  printf "  ${BLUE}sync${NC}            Syncs volatile → persistent\n"
-  printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent)\n"
+  printf "  ${BLUE}sync${NC}            Syncs volatile → persistent (via systemd service)\n"
+  printf "  ${BLUE}startup${NC}         Run the automatic login script (syncs volatile ← persistent, via systemd service)\n"
   printf "  ${BLUE}clean-june${NC}      Clean up all junest installations and reset\n\n"
 
   printf "${YELLOW}Commands (debug):${NC}\n"
@@ -774,9 +774,13 @@ cmd_remove() {
 }
 
 cmd_sync() {
-  acquire_lock
-  sync_to_sgoinfre
-  cleanup_lock
+  verbose_log "Starting sync via systemd service..."
+  if systemctl --user start june_sync.service; then
+    log "Successfully requested package sync"
+  else
+    err "Sync failed - check systemd logs with: journalctl --user -u june_sync.service"
+    return 1
+  fi
 }
 
 cmd_list() {
@@ -906,46 +910,15 @@ cmd_update() {
 }
 
 cmd_startup() {
-  verbose_log "Syncing junest environment (volatile <- persistent)"
-
-  export JUNEST_HOME="$JUNEST_ROOT"
-
-  if ! ensure_dirs; then
-    err "Failed to ensure required directories"
+  verbose_log "Starting startup via systemd service..."
+  # not using nohub bc it writes a file
+  # https://askubuntu.com/a/106359
+  if (systemctl --user start june_startup.service &); then
+    log "Requested package startup. Your packages might not be available for a short while."
+  else
+    err "Startup failed - check systemd logs with: journalctl --user -u june_startup.service"
     return 1
   fi
-
-  # Check if ~/.junest exists (from previous default installation)
-  if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
-    verbose_log "Found junest in default location, moving to volatile..."
-    mv "$HOME/.junest" "$JUNEST_ROOT" || {
-      err "Could not move junest dir"
-      return 1
-    }
-  fi
-
-  acquire_lock
-
-  if ! sync_from_sgoinfre; then
-    # Checking for only the directory here is kinda bad but well whatever
-    # One way to break this is doing a mkdir at the beginning of the file (I did this before)
-    if [[ ! -d "$JUNEST_ROOT" ]]; then
-      verbose_log "WARNING INITIALIZING JUNEST FROM SCRATCH"
-      init_junest
-    fi
-  fi
-
-  verify_shims
-
-  # if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
-  #   export PATH="$SHIMS_DIR:$PATH"
-  #   verbose_log "Added $SHIMS_DIR to PATH"
-  # fi
-
-  export JUNEST_HOME="$JUNEST_ROOT"
-
-  cleanup_lock
-  verbose_log "June environment ready!"
 }
 
 cmd_clean_june() {
@@ -1116,18 +1089,67 @@ display_global_vars() {
   echo
 }
 
+cmd_startup_internal() {
+  verbose_log "Syncing junest environment (volatile <- persistent)"
+
+  export JUNEST_HOME="$JUNEST_ROOT"
+
+  if ! ensure_dirs; then
+    err "Failed to ensure required directories"
+    return 1
+  fi
+
+  # Check if ~/.junest exists (from previous default installation)
+  if [[ -d "$HOME/.junest" ]] && [[ ! -d "$JUNEST_ROOT" ]]; then
+    verbose_log "Found junest in default location, moving to volatile..."
+    mv "$HOME/.junest" "$JUNEST_ROOT" || {
+      err "Could not move junest dir"
+      return 1
+    }
+  fi
+
+  acquire_lock
+
+  if ! sync_from_sgoinfre; then
+    # Checking for only the directory here is kinda bad but well whatever
+    # One way to break this is doing a mkdir at the beginning of the file (I did this before)
+    if [[ ! -d "$JUNEST_ROOT" ]]; then
+      verbose_log "WARNING INITIALIZING JUNEST FROM SCRATCH"
+      init_junest
+    fi
+  fi
+
+  verify_shims
+
+  # if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
+  #   export PATH="$SHIMS_DIR:$PATH"
+  #   verbose_log "Added $SHIMS_DIR to PATH"
+  # fi
+
+  export JUNEST_HOME="$JUNEST_ROOT"
+
+  cleanup_lock
+  verbose_log "June environment ready!"
+}
+
+cmd_sync_internal() {
+  acquire_lock
+  sync_to_sgoinfre
+  cleanup_lock
+}
+
 cmd_startup_systemd() {
   GLOBAL_REDUCED_LOG=true
 
   display_global_vars
-  cmd_startup
+  cmd_startup_internal
 }
 
 cmd_sync_systemd() {
   GLOBAL_REDUCED_LOG=true
 
   display_global_vars
-  cmd_sync
+  cmd_sync_internal
 }
 
 cmd_generate_shims() {
@@ -1224,7 +1246,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   # Being sourced - run startup if needed
   export JUNEST_HOME="$JUNEST_ROOT"
   if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
-    cmd_startup
+    cmd_startup_internal
   else
     # Quick check if PATH needs updating
     if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
@@ -1275,6 +1297,12 @@ sync)
   ;;
 startup)
   cmd_startup
+  ;;
+_startup_internal)
+  cmd_startup_internal
+  ;;
+_sync_internal)
+  cmd_sync_internal
   ;;
 systemd-start)
   cmd_startup_systemd
