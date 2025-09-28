@@ -3,6 +3,15 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+on_exit() {
+  exit_code=$?
+
+  if [ $exit_code -ne 0 ]; then
+    printf "${RED}[june] Exited with error code ${exit_code}${NC}\n"
+  fi
+}
+trap on_exit EXIT
+
 # **************************************************************************** #
 #                                Common consts                                 #
 # **************************************************************************** #
@@ -21,7 +30,7 @@ STATE_DB="${VOLATILE}/june-state.db"
 JUNE_STATE="${PERSISTENT}/june-state.db"
 LOG_FILE="${VOLATILE}/june-startup.log"
 # Common commands
-YAY_CMD="yay"
+YAY_CMD="yay" # no `--color=auto` here bc we use `--color=never` somewhere in june
 COMPRESS_CMD=(zstd -T$(($(nproc) * 3 / 4)) --adapt) # 3/4 of the proc in adapt mode
 #COMPRESS_CMD=(zstd -T$(($(nproc) * 1 / 2)) --fast) # 1/2 of the proc in fast mode
 COMPRESS_EXCLUDE=(--exclude="var/cache" --exclude run --exclude goinfre --exclude sgoinfre --exclude "python3*/__pycache__")
@@ -74,7 +83,6 @@ make_env() {
 COMMON_BINDS=(
   $(make_bind /sgoinfre /sgoinfre)
   $(make_bind /goinfre /goinfre)
-  $(make_bind /usr/share/icons /usr/share/icons)
 )
 NORMAL_BINDS=(
   "${COMMON_BINDS[@]}"
@@ -82,6 +90,7 @@ NORMAL_BINDS=(
 )
 SHIM_BINDS=(
   "${COMMON_BINDS[@]}"
+  $(make_bind /usr/share/icons /usr/share/icons)
 )
 NORMAL_ENV=(
   $(make_env OPENSSL_DIR /usr)
@@ -407,6 +416,7 @@ init_junest() {
     " || log "Note: junest env installation failed"
 
   log "Junest initialized - saving to persistent storage..."
+  log "Note: next time this step will run in the background"
   sync_to_sgoinfre
 }
 
@@ -457,7 +467,42 @@ verify_shims() {
 record_package() {
   local pkg="$1"
   local timestamp=$(date +%s)
-  echo "${pkg}|${timestamp}|installed" >>"$STATE_DB"
+  echo "${pkg},${timestamp},${timestamp}" >>"$STATE_DB"
+}
+
+record_package_update() {
+  local pkg="$1"
+  local timestamp=$(date +%s)
+
+  # Check if package is already installed
+  local existing_entry=""
+  if [[ -f "$STATE_DB" ]]; then
+    existing_entry=$(grep "^${pkg}," "$STATE_DB" | tail -1 || true)
+  fi
+
+  if [[ -n "$existing_entry" ]]; then
+    # Package exists, update the entry with new update timestamp
+    local install_timestamp=$(echo "$existing_entry" | cut -d',' -f2)
+    # Remove old entry and add updated one
+    local temp_db="${STATE_DB}.tmp"
+    grep -v "^${pkg}," "$STATE_DB" > "$temp_db" 2>/dev/null || true
+    echo "${pkg},${install_timestamp},${timestamp}" >>"$temp_db"
+    mv "$temp_db" "$STATE_DB"
+  else
+    # New package
+    echo "${pkg},${timestamp},${timestamp}" >>"$STATE_DB"
+  fi
+}
+
+record_package_removal() {
+  local pkg="$1"
+
+  # Remove the package entry completely
+  if [[ -f "$STATE_DB" ]]; then
+    local temp_db="${STATE_DB}.tmp"
+    grep -v "^${pkg}," "$STATE_DB" > "$temp_db" 2>/dev/null || true
+    mv "$temp_db" "$STATE_DB"
+  fi
 }
 
 ensure_dirs() {
@@ -697,11 +742,11 @@ cmd_install() {
       done <<<"$bins"
     fi
 
-    record_package "$pkg"
+    record_package_update "$pkg"
   done
 
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -746,7 +791,7 @@ cmd_remove() {
       fi
     done <<<"$bins"
 
-    echo "${pkg}|$(date +%s)|removed" >>"$STATE_DB"
+    record_package_removal "$pkg"
   done
 
   # Build remove command with flags
@@ -764,7 +809,7 @@ cmd_remove() {
   }
 
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -813,40 +858,90 @@ cmd_list() {
       return 0
     fi
 
-    local installed_count=0
-    local removed_count=0
-    local pkgs=()
+    # Remove duplicates and ensure clean database format
+    local temp_db="${STATE_DB}.clean"
+    declare -A seen_packages=()
 
-    # Parse state database and collect packages first
-    while IFS='|' read -r pkg timestamp status; do
-      if [[ -n "$pkg" && -n "$status" ]]; then
-        case "$status" in
-          "installed")
-            pkgs+=("$pkg")
-            ((installed_count++)) || true
-            ;;
-          "removed")
-            ((removed_count++)) || true
-            ;;
-        esac
+    # Read and deduplicate packages, keeping the latest entry for each
+    while IFS=',' read -r pkg install_ts update_ts; do
+      if [[ -n "$pkg" && -n "$install_ts" && -n "$update_ts" ]]; then
+        seen_packages["$pkg"]="$install_ts,$update_ts"
       fi
     done < "$STATE_DB" 2>/dev/null
 
-    # Note: This fails when there are packages that have been marked as removed
-    # Note: This also is not optimal bc it's a loop where we could be leveraging]
-    # multiple args in the yay command but welp.
-    for pkg in "$(printf '%s\n' "${pkgs[@]}" | sort -u)"; do
-      "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q $pkg || "${JUNEST_CMD[@]}" -- pacman -Q $pkg
-    done
-
-    if ((installed_count == 0)); then
+    # Check if we have any packages
+    if [[ ${#seen_packages[@]} -eq 0 ]]; then
       log "No user-installed packages found"
       log "Use 'june install <package>' to install packages"
-    else
-      log "Total user-installed packages: ${GREEN}$installed_count${NC}"
-      if ((removed_count > 0)); then
-        verbose_log "Previously removed packages: ${GRAY}$removed_count${NC}"
+      return 0
+    fi
+
+    # Write clean database
+    > "$temp_db"
+    for pkg in "${!seen_packages[@]}"; do
+      echo "${pkg},${seen_packages[$pkg]}" >> "$temp_db"
+    done
+    mv "$temp_db" "$STATE_DB"
+
+    # Get all package names for batch query
+    local -a all_packages=()
+    for pkg in "${!seen_packages[@]}"; do
+      all_packages+=("$pkg")
+    done
+
+    # Query all packages at once and create a lookup table
+    declare -A installed_packages=()
+    local yay_output=""
+    if yay_output=$("${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=auto -Q "${all_packages[@]}" 2>/dev/null) || yay_output=$("${JUNEST_CMD[@]}" -- pacman -Q "${all_packages[@]}" 2>/dev/null); then
+      # Parse the output
+      while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+          local pkg_name=$(echo "$line" | awk '{print $1}')
+          installed_packages["$pkg_name"]="$line"
+        fi
+      done <<<"$yay_output"
+    fi
+
+    local total_count=0
+    local updated_count=0
+    local -a packages_to_remove=()
+
+    # Display packages with their status
+    for pkg in "${!seen_packages[@]}"; do
+      local timestamps="${seen_packages[$pkg]}"
+      local install_ts=$(echo "$timestamps" | cut -d',' -f1)
+      local update_ts=$(echo "$timestamps" | cut -d',' -f2)
+
+      if [[ -n "${installed_packages[$pkg]:-}" ]]; then
+        ((total_count++)) || true
+
+        if [[ "$install_ts" != "$update_ts" ]]; then
+          local update_date=$(date -d "@$update_ts" "+%Y-%m-%d" 2>/dev/null || echo "unknown")
+          echo "${installed_packages[$pkg]} ${GRAY}(updated $update_date)${NC}"
+          ((updated_count++)) || true
+        else
+          echo "${installed_packages[$pkg]}"
+        fi
+      else
+        verbose_log "Package $pkg no longer installed, removing from state"
+        packages_to_remove+=("$pkg")
       fi
+    done
+
+    # Remove packages that are no longer installed
+    for pkg in "${packages_to_remove[@]}"; do
+      record_package_removal "$pkg"
+    done
+
+    if ((total_count == 0)); then
+      log "No user-installed packages found"
+      log "Use 'june install <package>' to install packages"
+      return 0
+    fi
+
+    log "Total user-installed packages: ${GREEN}$total_count${NC}"
+    if ((updated_count > 0)); then
+      log "Packages with updates: ${YELLOW}$updated_count${NC}"
     fi
 
     log "Use 'june list --all' to see all packages in junest environment"
@@ -889,6 +984,16 @@ cmd_update() {
 
   log "Updating package databases and installed packages..."
 
+  # Get list of user-installed packages before update
+  local -a user_packages=()
+  if [[ -f "$STATE_DB" ]]; then
+    while IFS='|' read -r pkg timestamp status extra; do
+      if [[ -n "$pkg" && ("$status" == "installed" || "$status" == "updated") ]]; then
+        user_packages+=("$pkg")
+      fi
+    done < "$STATE_DB" 2>/dev/null
+  fi
+
   # Build update command with flags
   local update_args=("--color=auto" "-Syu" "--noconfirm")
 
@@ -899,8 +1004,22 @@ cmd_update() {
 
   "${JUNEST_CMD[@]}" -- ${YAY_CMD} "${update_args[@]}" || "${JUNEST_CMD[@]}" -- pacman -Syu --noconfirm
 
+  # Record updates for user-installed packages
+  if [[ ${#user_packages[@]} -gt 0 ]]; then
+    log "Recording updates for user-installed packages..."
+    for pkg in "${user_packages[@]}"; do
+      # Check if package is still installed
+      if "${JUNEST_CMD[@]}" -- ${YAY_CMD} --color=never -Q "$pkg" >/dev/null 2>&1 || "${JUNEST_CMD[@]}" -- pacman -Q "$pkg" >/dev/null 2>&1; then
+        record_package_update "$pkg"
+      else
+        verbose_log "Package $pkg no longer installed, removing from state"
+        record_package_removal "$pkg"
+      fi
+    done
+  fi
+
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -1031,8 +1150,8 @@ cmd_doctor() {
   log "\nUser-installed packages:"
   if [[ -f "$STATE_DB" ]]; then
     local installed_count=0
-    while IFS='|' read -r pkg timestamp status; do
-      if [[ -n "$pkg" && "$status" == "installed" ]]; then
+    while IFS=',' read -r pkg install_ts update_ts; do
+      if [[ -n "$pkg" && -n "$install_ts" && -n "$update_ts" ]]; then
         ((installed_count++)) || true
       fi
     done <"$STATE_DB" 2>/dev/null
@@ -1156,7 +1275,7 @@ cmd_generate_shims() {
   ensure_junest || return 1
 
   # Packages to ignore when generating shims
-  local ignored_packages=("archlinux-keyring" "base-devel" coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
+  local ignored_packages=(archlinux-keyring base-devel coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
 
   log "Generating shims for all explicitly installed packages..."
 
@@ -1246,7 +1365,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   # Being sourced - run startup if needed
   export JUNEST_HOME="$JUNEST_ROOT"
   if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
-    cmd_startup_internal
+    cmd_startup
   else
     # Quick check if PATH needs updating
     if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
