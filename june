@@ -416,6 +416,7 @@ init_junest() {
     " || log "Note: junest env installation failed"
 
   log "Junest initialized - saving to persistent storage..."
+  log "Note: next time this step will run in the background"
   sync_to_sgoinfre
 }
 
@@ -476,7 +477,7 @@ record_package_update() {
   # Check if package is already installed
   local existing_entry=""
   if [[ -f "$STATE_DB" ]]; then
-    existing_entry=$(grep "^${pkg}," "$STATE_DB" | tail -1)
+    existing_entry=$(grep "^${pkg}," "$STATE_DB" | tail -1 || true)
   fi
 
   if [[ -n "$existing_entry" ]]; then
@@ -745,7 +746,7 @@ cmd_install() {
   done
 
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -808,7 +809,7 @@ cmd_remove() {
   }
 
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -1018,7 +1019,7 @@ cmd_update() {
   fi
 
   if ! has_flag "--no-sync" "${flags[@]}"; then
-    sync_to_sgoinfre
+    cmd_sync
   else
     verbose_log "Skipping sync due to --no-sync flag"
   fi
@@ -1274,7 +1275,7 @@ cmd_generate_shims() {
   ensure_junest || return 1
 
   # Packages to ignore when generating shims
-  local ignored_packages=("archlinux-keyring" "base-devel" coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
+  local ignored_packages=(archlinux-keyring base-devel coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
 
   log "Generating shims for all explicitly installed packages..."
 
@@ -1364,7 +1365,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   # Being sourced - run startup if needed
   export JUNEST_HOME="$JUNEST_ROOT"
   if [[ ! -d "$JUNEST_ROOT" ]] || [[ ! -f "${JUNEST_ROOT}/.june-sync-time" ]]; then
-    cmd_startup_internal
+    cmd_startup
   else
     # Quick check if PATH needs updating
     if [[ ":$PATH:" != *":$SHIMS_DIR:"* ]]; then
