@@ -1,0 +1,15 @@
+########
+# WARN #
+########
+# This sync script uses the dev version
+
+[Unit]
+Description=June "logout" ("sync") script
+
+[Service]
+ExecStart=/usr/bin/env bash /sgoinfre/elagouch/june_dev/june --verbose systemd-stop
+TimeoutStopSec=600s
+
+Environment="HOME=%h"
+
+[Install]
