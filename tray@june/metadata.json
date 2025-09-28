@@ -1,0 +1,16 @@
+{
+  "name": "June Tray Integration",
+  "description": "System tray icon for June service monitoring",
+  "uuid": "tray@june",
+  "shell-version": [
+    "40",
+    "41",
+    "42",
+    "43",
+    "44",
+    "45",
+    "46"
+  ],
+  "version": 1,
+  "url": "https://github.com/elagouch/june_dev"
+}

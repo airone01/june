@@ -1,0 +1,12 @@
+.june-status-header {
+    font-weight: bold;
+    color: #ffffff;
+}
+
+.june-status-active {
+    color: #007FFF;
+}
+
+.june-status-idle {
+    color: #26a269;
+}
