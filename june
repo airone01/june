@@ -477,6 +477,7 @@ record_package_update() {
   # Check if package is already installed
   local existing_entry=""
   if [[ -f "$STATE_DB" ]]; then
+    verbose_log "XXXXXXXXXXXXXXXXXXXXXXX"
     existing_entry=$(grep "^${pkg}," "$STATE_DB" | tail -1 || true)
   fi
 
@@ -1275,7 +1276,7 @@ cmd_generate_shims() {
   ensure_junest || return 1
 
   # Packages to ignore when generating shims
-  local ignored_packages=(archlinux-keyring base-devel coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim)
+  local ignored_packages=(archlinux-keyring base-devel coreutils bwrap pacman valgrind proot-static proot sudo-fake yay-git yay groot groot-git less nano vim gettext.sh)
 
   log "Generating shims for all explicitly installed packages..."
 
